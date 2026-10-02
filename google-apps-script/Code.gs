@@ -32,8 +32,10 @@ const FONT = 'Roboto';
 
 /* ---------------- Web app entry points ---------------- */
 
-function doGet(e) {
-  return handle_((e && e.parameter) || {});
+// Opening the URL in a browser shows nothing useful; all data goes through doPost
+// so the password is never part of a URL.
+function doGet() {
+  return json_({ ok: false, error: 'Not available' });
 }
 
 function doPost(e) {
@@ -43,8 +45,11 @@ function doPost(e) {
 }
 
 function handle_(req) {
-  if (SECRET === 'change-this-password') return json_({ ok: false, error: 'Change SECRET in the script first, then deploy again' });
-  if (String(req.secret || '') !== SECRET) return json_({ ok: false, error: 'Wrong password' });
+  if (SECRET === 'change-this-password' || SECRET.length < 10) return json_({ ok: false, error: 'Set SECRET in the script to a password of at least 10 characters, then deploy again' });
+  if (String(req.secret || '') !== SECRET) {
+    Utilities.sleep(1500); // slows down anyone guessing passwords
+    return json_({ ok: false, error: 'Wrong password' });
+  }
   try {
     switch (req.action) {
       case 'ping': return json_({ ok: true, sheet: SpreadsheetApp.getActive().getName() });

@@ -23,9 +23,11 @@ There is no server to run. The app is a set of static files, and Google runs the
 
 ## 2. Create the Google Sheet backup (about 5 minutes, one time)
 
+**Privacy:** do this while signed in to **your mom's Google account**, so she owns the sheet and nobody else can open it. Never use the Share button on it.
+
 1. Go to <https://sheets.new> and name the sheet, for example **In-Out Register**.
 2. Click **Extensions > Apps Script**. Delete everything in the editor, then paste the full contents of `google-apps-script/Code.gs`.
-3. On the line `const SECRET = 'change-this-password';`, replace the text inside the quotes with a password of your own. Click **Save**.
+3. On the line `const SECRET = 'change-this-password';`, replace the text inside the quotes with a password of at least 10 characters (letters and numbers, not a name or birthday). Click **Save**.
 4. Click **Deploy > New deployment**. Click the gear icon, choose **Web app**, and set:
    - Execute as: **Me**
    - Who has access: **Anyone**
@@ -87,3 +89,10 @@ icons/                 app icons
 vendor/xlsx.full.min.js  Excel library (SheetJS)
 google-apps-script/Code.gs  paste into the Google Sheet's Apps Script
 ```
+
+## Who can see the data
+
+- **The Google Sheet** can only be opened by the Google account that created it. Create it in your mom's account and don't share it.
+- **The web app URL** has "Who has access: Anyone" because the phone app calls it without a Google sign-in. It is protected by the password: without the password it returns nothing, opening it in a browser shows nothing, and wrong guesses are slowed down. Keep the URL and password private; only your mom's phone needs them.
+- **The app on the phone** stores data only on that phone.
+- **GitHub** holds only the app's code, never any data.

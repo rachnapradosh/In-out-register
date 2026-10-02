@@ -848,21 +848,15 @@ const punchPayload = p => ({
   reason: p.reason || '', note: p.note || '', updatedAt: p.updatedAt || 0,
 });
 
-async function callScript(method, payload) {
+// Always POST so the password travels in the request body, never in a URL.
+async function callScript(payload) {
   const { scriptUrl, secret } = S.settings;
-  let res;
-  if (method === 'GET') {
-    const u = new URL(scriptUrl);
-    Object.entries({ ...payload, secret }).forEach(([k, v]) => u.searchParams.set(k, v));
-    res = await fetch(u.toString());
-  } else {
-    // text/plain keeps this a "simple" request, which Apps Script accepts without CORS preflight.
-    res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ ...payload, secret }),
-    });
-  }
+  // text/plain keeps this a "simple" request, which Apps Script accepts without CORS preflight.
+  const res = await fetch(scriptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ ...payload, secret }),
+  });
   let data;
   try { data = await res.json(); } catch { throw new Error('Unexpected reply. Check the web app URL and that access is set to "Anyone".'); }
   if (!data.ok) throw new Error(data.error || 'The sheet refused the request');
@@ -880,7 +874,7 @@ async function syncNow(manual) {
       const punches = S.punches.filter(p => p.dirty).slice(0, 500);
       if (!emps.length && !punches.length) break;
       const stamp = new Map([...emps, ...punches].map(r => [r.id, r.updatedAt]));
-      await callScript('POST', {
+      await callScript({
         action: 'sync',
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         reasons: S.settings.reasons,
@@ -1066,7 +1060,7 @@ const actions = {
     if (!confirm('Download all employees and entries from the Google Sheet and merge them into this phone?')) return;
     try {
       toast('Restoring...');
-      const data = await callScript('GET', { action: 'restore' });
+      const data = await callScript({ action: 'restore' });
       if (Array.isArray(data.reasons)) {
         for (const r of data.reasons) if (!S.settings.reasons.includes(r)) S.settings.reasons.push(r);
         await saveSettings();
@@ -1138,7 +1132,7 @@ document.addEventListener('submit', async e => {
       if (!S.settings.scriptUrl) { toast('Google Sheet backup turned off'); render(); break; }
       try {
         toast('Testing connection...');
-        await callScript('GET', { action: 'ping' });
+        await callScript({ action: 'ping' });
         // First connection: send everything so the sheet has a full copy.
         S.employees.forEach(x => { x.dirty = true; });
         S.punches.forEach(x => { x.dirty = true; });
