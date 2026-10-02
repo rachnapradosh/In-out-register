@@ -27,8 +27,8 @@ const C = {
   cream: '#f6f1e7', creamMuted: '#cfc6b2', paper: '#fffdf9', band: '#faf6ee', sand: '#efe7d6',
   heat: '#e9d3bf', ink: '#2e6b4a', out: '#9c4a2a', warn: '#8a6416',
 };
-const TITLE = 'Playfair Display';
-const BODY = 'Lato';
+const TITLE = 'Times New Roman';
+const BODY = 'Times New Roman';
 
 /* ---------------- Web app entry points ---------------- */
 
@@ -359,7 +359,7 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   ensureSize_(sh, Math.max(outRow + 60, 80), 12);
   trimSize_(sh, Math.max(outRow + 60, 80), 12);
   const all = sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns());
-  all.setFontFamily(BODY).setFontSize(10).setFontColor(C.text).setVerticalAlignment('middle').setBackground(C.cream);
+  all.setFontFamily(BODY).setFontSize(11).setFontColor(C.text).setVerticalAlignment('middle').setBackground(C.cream);
   sh.setRowHeights(1, sh.getMaxRows(), 22);
   sh.setHiddenGridlines(true);
   sh.setColumnWidth(1, 28);
@@ -377,20 +377,20 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   sh.getRange(5, 1, 1, W).setBackground(C.gold);
   sh.setRowHeight(5, 3);
   sh.getRange('B2').setValue('In-Out Register').setFontFamily(TITLE).setFontSize(24).setFontColor(C.cream);
-  sh.getRange('B3').setValue('Attendance overview  |  ' + stamp).setFontSize(9).setFontColor(C.creamMuted);
+  sh.getRange('B3').setValue('Attendance overview  |  ' + stamp).setFontSize(10).setFontColor(C.creamMuted);
   sh.getRange('G2:I3').merge().setValue(ss.getSpreadsheetTimeZone().replace('_', ' '))
-    .setFontSize(9).setFontColor(C.creamMuted).setHorizontalAlignment('right').setVerticalAlignment('bottom');
+    .setFontSize(10).setFontColor(C.creamMuted).setHorizontalAlignment('right').setVerticalAlignment('bottom');
 
   // Month picker (row 6, after a spacer that is row 5's gold rule)
   sh.setRowHeight(6, 40);
-  sh.getRange('B6').setValue('MONTH').setFontSize(8).setFontWeight('bold').setFontColor(C.muted).setHorizontalAlignment('right');
+  sh.getRange('B6').setValue('MONTH').setFontSize(9).setFontWeight('bold').setFontColor(C.muted).setHorizontalAlignment('right');
   const pick = sh.getRange('C6:D6').merge();
   pick.setNumberFormat('@').setValue(month).setFontFamily(TITLE).setFontSize(13).setFontColor(C.navy)
     .setBackground(C.paper).setHorizontalAlignment('center')
     .setBorder(true, true, true, true, false, false, C.navy, SpreadsheetApp.BorderStyle.SOLID);
   pick.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(options, true).setAllowInvalid(false).build());
   sh.getRange('E6:I6').merge().setValue('Choose a month and every figure below updates.')
-    .setFontSize(9).setFontColor(C.muted).setFontStyle('italic');
+    .setFontSize(10).setFontColor(C.muted).setFontStyle('italic');
   sh.getRange('L6').setFormula('=IF($C$6="' + ALL_MONTHS + '","*",$C$6)');
   const crit = '$L$6';
   const D = "'" + TAB.daily + "'!";
@@ -414,7 +414,7 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
     sh.getRange(t[0] + '8:' + t[1] + '9').setBackground(C.paper);
     sh.getRange(t[0] + '10:' + t[1] + '10').setBackground(C.gold);
     sh.getRange(t[0] + '8:' + t[1] + '8').merge().setValue(t[2].toUpperCase())
-      .setFontSize(8).setFontWeight('bold').setFontColor(C.muted).setHorizontalAlignment('center').setVerticalAlignment('bottom');
+      .setFontSize(9).setFontWeight('bold').setFontColor(C.muted).setHorizontalAlignment('center').setVerticalAlignment('bottom');
     sh.getRange(t[0] + '9:' + t[1] + '9').merge().setFormula(t[3]).setNumberFormat(t[4])
       .setFontFamily(TITLE).setFontSize(22).setFontColor(C.navy).setHorizontalAlignment('center');
     // cream gutters between the cards
@@ -481,7 +481,7 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   sh.setRowHeight(outRow, 34);
   sh.getRange(outRow, 2).setValue('Out Right Now').setFontFamily(TITLE).setFontSize(15).setFontColor(C.navy).setVerticalAlignment('bottom');
   sh.getRange(outRow, 3, 1, 4).merge().setValue('As of the last update, including anyone who has left for the day')
-    .setFontSize(9).setFontColor(C.muted).setFontStyle('italic').setVerticalAlignment('bottom');
+    .setFontSize(10).setFontColor(C.muted).setFontStyle('italic').setVerticalAlignment('bottom');
   headerRow_(sh.getRange(outRow + 1, 2, 1, 4), ['Employee', 'Out since', 'Reason', 'Department']);
   sh.getRange(outRow + 1, 3).setHorizontalAlignment('center');
   let outRows = outNow.map(d => [d.emp.name, d.last.date, d.last.reason || NO_REASON, d.emp.dept || '']);
@@ -497,7 +497,7 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   // Chart of hours out per employee for the chosen month
   if (people.length) {
     const chartRow = outRow + 4 + outRows.length;
-    const font = { fontName: BODY, color: C.text, fontSize: 10 };
+    const font = { fontName: BODY, color: C.text, fontSize: 11 };
     const chart = sh.newChart()
       .setChartType(Charts.ChartType.BAR)
       .addRange(sh.getRange(top, 2, people.length, 1))
@@ -552,14 +552,14 @@ function trimSize_(sh, rows, cols) {
 
 function headerRow_(range, labels) {
   range.setValues([labels.map(l => String(l).toUpperCase())])
-    .setBackground(C.navy).setFontColor(C.cream).setFontFamily(BODY).setFontWeight('bold').setFontSize(8)
+    .setBackground(C.navy).setFontColor(C.cream).setFontFamily(BODY).setFontWeight('bold').setFontSize(9)
     .setHorizontalAlignment('left').setVerticalAlignment('middle')
     .setBorder(null, null, true, null, null, null, C.gold, SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
   range.getSheet().setRowHeight(range.getRow(), 32);
 }
 
 function bodyStyle_(sh, range, n) {
-  range.setFontFamily(BODY).setFontSize(10).setFontColor(C.text).setVerticalAlignment('middle')
+  range.setFontFamily(BODY).setFontSize(11).setFontColor(C.text).setVerticalAlignment('middle')
     .setBorder(null, null, true, null, null, true, C.hair, SpreadsheetApp.BorderStyle.SOLID);
   sh.setRowHeightsForced(range.getRow(), n, 30);
   for (let i = 0; i < n; i++) sh.getRange(range.getRow() + i, range.getColumn(), 1, range.getNumColumns()).setBackground(i % 2 ? C.band : C.paper);
@@ -573,7 +573,7 @@ function table_(ss, name, title, subtitle, head, rows, opt) {
   trimSize_(sh, lastRow + 2, totalCols);
   sh.setHiddenGridlines(true);
   sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns())
-    .setFontFamily(BODY).setFontSize(10).setFontColor(C.text).setVerticalAlignment('middle').setBackground(C.paper);
+    .setFontFamily(BODY).setFontSize(11).setFontColor(C.text).setVerticalAlignment('middle').setBackground(C.paper);
   sh.setRowHeights(1, sh.getMaxRows(), 22);
   sh.setColumnWidth(1, 28);
   sh.setColumnWidth(totalCols, 28);
@@ -584,7 +584,7 @@ function table_(ss, name, title, subtitle, head, rows, opt) {
   sh.setRowHeight(3, 22);
   sh.setRowHeight(4, 14);
   sh.getRange(2, 1 + CO).setValue(title).setFontFamily(TITLE).setFontSize(20).setFontColor(C.navy).setVerticalAlignment('bottom');
-  sh.getRange(3, 1 + CO).setValue(subtitle).setFontSize(9).setFontColor(C.muted).setVerticalAlignment('top');
+  sh.getRange(3, 1 + CO).setValue(subtitle).setFontSize(10).setFontColor(C.muted).setVerticalAlignment('top');
   sh.getRange(3, 1 + CO, 1, nCols).setBorder(null, null, true, null, null, null, C.gold, SpreadsheetApp.BorderStyle.SOLID);
 
   headerRow_(sh.getRange(HR, 1 + CO, 1, nCols), head);
