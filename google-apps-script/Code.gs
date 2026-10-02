@@ -77,7 +77,9 @@ function sync_(req) {
     if (Array.isArray(req.reasons)) PropertiesService.getScriptProperties().setProperty('reasons', JSON.stringify(req.reasons));
     const emps = upsert_(rawSheet_(ss, TAB.rawE, RAW_E), RAW_E, req.employees || []);
     const punches = upsert_(rawSheet_(ss, TAB.rawP, RAW_P), RAW_P, req.punches || []);
-    rebuild_(ss, emps, punches);
+    // The data is safe at this point. A styling problem in the visible tabs is
+    // logged (Apps Script > Executions) but never reported as a failed backup.
+    try { rebuild_(ss, emps, punches); } catch (err) { console.error('rebuild failed: ' + ((err && err.stack) || err)); }
     return { ok: true };
   } finally {
     lock.releaseLock();
@@ -496,24 +498,29 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   if (people.length) {
     const chartRow = outRow + 4 + outRows.length;
     const font = { fontName: BODY, color: C.text, fontSize: 11 };
-    const chart = sh.newChart()
+    const base = () => sh.newChart()
       .setChartType(Charts.ChartType.BAR)
       .addRange(sh.getRange(top, 2, people.length, 1))
       .addRange(sh.getRange(top, 8, people.length, 1))
       .setPosition(chartRow, 2, 0, 0)
       .setOption('title', 'Hours out by employee, selected month')
-      .setOption('titleTextStyle', { fontName: TITLE, color: C.navy, fontSize: 15, bold: false })
       .setOption('legend', { position: 'none' })
       .setOption('colors', [C.navy])
-      .setOption('backgroundColor', { fill: C.paper, stroke: C.hair, strokeWidth: 1 })
-      .setOption('chartArea', { left: 150, top: 50, right: 30, bottom: 50 })
-      .setOption('hAxis', { title: 'Hours', minValue: 0, textStyle: font, titleTextStyle: font, gridlines: { color: C.hair }, baselineColor: C.hair })
-      .setOption('vAxis', { textStyle: font })
-      .setOption('bar', { groupWidth: '62%' })
       .setOption('width', 860)
-      .setOption('height', Math.max(260, people.length * 30 + 100))
-      .build();
-    sh.insertChart(chart);
+      .setOption('height', Math.max(260, people.length * 30 + 100));
+    // Google drops support for chart options from time to time. Try the styled
+    // chart first and fall back to a plain one so the backup never fails here.
+    try {
+      sh.insertChart(base()
+        .setOption('titleTextStyle', { fontName: TITLE, color: C.navy, fontSize: 15 })
+        .setOption('backgroundColor', C.paper)
+        .setOption('hAxis', { title: 'Hours', minValue: 0, textStyle: font, titleTextStyle: font, gridlines: { color: C.hair } })
+        .setOption('vAxis', { textStyle: font })
+        .build());
+    } catch (err) {
+      sh.getCharts().forEach(c => sh.removeChart(c));
+      try { sh.insertChart(base().build()); } catch (err2) { /* leave the dashboard without a chart */ }
+    }
   }
 
   sh.setFrozenRows(6);
