@@ -23,12 +23,12 @@ const ALL_MONTHS = 'All months';
 const NO_REASON = 'No reason';
 
 const C = {
-  brand: '#1b2a4e', brandDark: '#14203d', brandSoft: '#e7eaf2',
-  text: '#1a2340', muted: '#6e6a60', line: '#e7dfcf', band: '#faf6ee', white: '#fffdf8',
-  ink: '#1f7a4d', inSoft: '#e5f2ea', out: '#b4532a', outSoft: '#f8e9df',
-  warn: '#9a6a12', warnSoft: '#f8efd9', cream: '#f6f1e7', creamText: '#e9e1cf',
+  navy: '#1b2a4e', text: '#1f2533', muted: '#8a8170', hair: '#ebe4d6', gold: '#b08d57',
+  cream: '#f6f1e7', creamMuted: '#cfc6b2', paper: '#fffdf9', band: '#faf6ee', sand: '#efe7d6',
+  heat: '#e9d3bf', ink: '#2e6b4a', out: '#9c4a2a', warn: '#8a6416',
 };
-const FONT = 'Roboto';
+const TITLE = 'Playfair Display';
+const BODY = 'Lato';
 
 /* ---------------- Web app entry points ---------------- */
 
@@ -195,20 +195,41 @@ const fmtMin_ = m => { m = Math.round(m); return m < 60 ? m + 'm' : Math.floor(m
 
 /* ---------------- Building the visible tabs ---------------- */
 
+// Every table tab shares one layout: a margin column A, a title block,
+// a navy header on row HR and data from row FR.
+const HR = 5;
+const FR = 6;
+const CO = 1; // column offset for the margin
+
 function rebuild_(ss, emps, punches) {
   const tz = ss.getSpreadsheetTimeZone();
   const days = computeDays_(emps, punches, tz);
   const empMap = new Map(emps.map(e => [String(e.id), e]));
-  buildDaily_(ss, days);
-  buildAway_(ss, days);
-  buildLog_(ss, punches, empMap);
-  buildEmployees_(ss, emps);
-  buildDashboard_(ss, emps, days, tz);
+  const stamp = 'Updated ' + Utilities.formatDate(new Date(), tz, "d MMMM yyyy 'at' h:mm a");
+  buildDaily_(ss, days, stamp);
+  buildAway_(ss, days, stamp);
+  buildLog_(ss, punches, empMap, stamp);
+  buildEmployees_(ss, emps, stamp);
+  buildDashboard_(ss, emps, days, tz, stamp);
   orderTabs_(ss);
 }
 
-function buildDaily_(ss, days) {
-  const head = ['Date', 'Day', 'Employee', 'Department', 'First IN', 'Left at', 'Times out', 'Time out', 'Time inside', 'Reasons', 'Flags', 'Month'];
+// Column c (1-based within the table) of the data rows.
+const dataCol_ = (sh, c, n) => sh.getRange(FR, c + CO, n, 1);
+
+function gradient_(range, to) {
+  return SpreadsheetApp.newConditionalFormatRule().setRanges([range])
+    .setGradientMinpointWithValue(C.paper, SpreadsheetApp.InterpolationType.NUMBER, '0')
+    .setGradientMaxpointWithValue(to || C.heat, SpreadsheetApp.InterpolationType.PERCENTILE, '95').build();
+}
+const textRule_ = (range, text, color, italic) => {
+  const b = SpreadsheetApp.newConditionalFormatRule().setRanges([range]).whenTextEqualTo(text).setFontColor(color);
+  if (italic) b.setItalic(true);
+  return b.build();
+};
+
+function buildDaily_(ss, days, stamp) {
+  const head = ['Date', 'Day', 'Employee', 'Department', 'First in', 'Left at', 'Times out', 'Time out', 'Time inside', 'Reasons', 'Notes', 'Month'];
   const rows = days.map(d => {
     const reasons = {};
     d.away.forEach(a => { const r = a.out.reason || NO_REASON; reasons[r] = (reasons[r] || 0) + a.min; });
@@ -221,29 +242,27 @@ function buildDaily_(ss, days) {
       Object.keys(reasons).map(r => r + ' ' + fmtMin_(reasons[r])).join(', '), flags.join(', '), d.month,
     ];
   });
-  const sh = table_(ss, TAB.daily, head, rows, {
-    widths: [120, 60, 190, 140, 90, 90, 90, 90, 100, 280, 170, 120],
+  const sh = table_(ss, TAB.daily, 'Daily Record', 'One line per employee per day  |  ' + stamp, head, rows, {
+    widths: [118, 52, 180, 130, 90, 90, 84, 90, 100, 260, 160, 110],
     formats: ['dd mmm yyyy', 'ddd', '@', '@', 'h:mm am/pm', 'h:mm am/pm', '0', '[h]:mm', '[h]:mm', '@', '@', '@'],
     center: [2, 5, 6, 7, 8, 9],
+    bold: [3, 8],
   });
-  sh.hideColumns(12);
+  sh.hideColumns(12 + CO);
   if (rows.length) {
     const n = rows.length;
-    const rules = [
-      SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(2, 8, n, 1)])
-        .setGradientMinpointWithValue(C.white, SpreadsheetApp.InterpolationType.NUMBER, '0')
-        .setGradientMaxpointWithValue('#e9a27f', SpreadsheetApp.InterpolationType.PERCENTILE, '95').build(),
-      SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(2, 11, n, 1)])
-        .whenTextContains('No OUT').setFontColor(C.warn).setBackground(C.warnSoft).setBold(true).build(),
-      SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(2, 11, n, 1)])
-        .whenTextContains('Out now').setFontColor(C.out).setBackground(C.outSoft).setBold(true).build(),
-    ];
-    sh.setConditionalFormatRules(rules);
-    sh.getRange(2, 8, n, 1).setFontWeight('bold');
+    sh.setConditionalFormatRules([
+      gradient_(dataCol_(sh, 8, n)),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([dataCol_(sh, 11, n)])
+        .whenTextContains('No OUT').setFontColor(C.warn).setItalic(true).build(),
+      SpreadsheetApp.newConditionalFormatRule().setRanges([dataCol_(sh, 11, n)])
+        .whenTextContains('Out now').setFontColor(C.out).setItalic(true).build(),
+    ]);
+    dataCol_(sh, 2, n).setFontColor(C.muted);
   }
 }
 
-function buildAway_(ss, days) {
+function buildAway_(ss, days, stamp) {
   const head = ['Date', 'Employee', 'Department', 'Out', 'Back', 'Duration', 'Reason', 'Note'];
   const items = [];
   days.forEach(d => d.away.forEach(a => items.push({ d: d, a: a })));
@@ -252,77 +271,73 @@ function buildAway_(ss, days) {
     x.a.out.date, x.d.emp.name, x.d.emp.dept || '', x.a.out.date, x.a.back.date, dur_(x.a.min),
     x.a.out.reason || NO_REASON, [x.a.out.note, x.a.back.note].filter(String).join('; '),
   ]);
-  const sh = table_(ss, TAB.away, head, rows, {
-    widths: [120, 190, 140, 95, 95, 90, 150, 280],
+  const sh = table_(ss, TAB.away, 'Time Out', 'Every OUT and the IN that followed it, newest first  |  ' + stamp, head, rows, {
+    widths: [118, 180, 130, 92, 92, 90, 140, 260],
     formats: ['dd mmm yyyy', '@', '@', 'h:mm am/pm', 'h:mm am/pm', '[h]:mm', '@', '@'],
     center: [4, 5, 6],
+    bold: [2, 6],
   });
   if (rows.length) {
     const n = rows.length;
-    sh.getRange(2, 6, n, 1).setFontWeight('bold');
-    sh.setConditionalFormatRules([
-      SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(2, 6, n, 1)])
-        .setGradientMinpointWithValue(C.white, SpreadsheetApp.InterpolationType.NUMBER, '0')
-        .setGradientMaxpointWithValue('#e9a27f', SpreadsheetApp.InterpolationType.PERCENTILE, '95').build(),
-      SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(2, 7, n, 1)])
-        .whenTextEqualTo(NO_REASON).setFontColor(C.muted).setItalic(true).build(),
-    ]);
+    sh.setConditionalFormatRules([gradient_(dataCol_(sh, 6, n)), textRule_(dataCol_(sh, 7, n), NO_REASON, C.muted, true)]);
   }
 }
 
-function buildLog_(ss, punches, empMap) {
-  const head = ['Date', 'Time', 'Employee', 'Department', 'IN / OUT', 'Reason', 'Note'];
+function buildLog_(ss, punches, empMap, stamp) {
+  const head = ['Date', 'Time', 'Employee', 'Department', 'In / Out', 'Reason', 'Note'];
   const sorted = punches.filter(p => Number(p.ts)).sort((a, b) => Number(b.ts) - Number(a.ts));
   const rows = sorted.map(p => {
     const e = empMap.get(String(p.empId)) || { name: 'Unknown', dept: '' };
     const d = new Date(Number(p.ts));
     return [d, d, e.name, e.dept || '', p.type === 'in' ? 'IN' : 'OUT', p.reason || '', p.note || ''];
   });
-  const sh = table_(ss, TAB.log, head, rows, {
-    widths: [120, 95, 190, 140, 90, 150, 280],
+  const sh = table_(ss, TAB.log, 'Punch Log', 'Every IN and OUT as recorded, newest first  |  ' + stamp, head, rows, {
+    widths: [118, 92, 180, 130, 84, 140, 260],
     formats: ['dd mmm yyyy', 'h:mm am/pm', '@', '@', '@', '@', '@'],
     center: [2, 5],
+    bold: [3, 5],
   });
   if (rows.length) {
-    const r = sh.getRange(2, 5, rows.length, 1);
-    r.setFontWeight('bold');
-    sh.setConditionalFormatRules([
-      SpreadsheetApp.newConditionalFormatRule().setRanges([r]).whenTextEqualTo('IN').setBackground(C.inSoft).setFontColor(C.ink).build(),
-      SpreadsheetApp.newConditionalFormatRule().setRanges([r]).whenTextEqualTo('OUT').setBackground(C.outSoft).setFontColor(C.out).build(),
-    ]);
+    const r = dataCol_(sh, 5, rows.length);
+    sh.setConditionalFormatRules([textRule_(r, 'IN', C.ink), textRule_(r, 'OUT', C.out)]);
   }
 }
 
-function buildEmployees_(ss, emps) {
+function buildEmployees_(ss, emps, stamp) {
   const head = ['Name', 'Department', 'Status', 'Added on'];
-  const list = emps.slice().sort((a, b) => {
-    const aa = a.active === true || a.active === 'TRUE', bb = b.active === true || b.active === 'TRUE';
-    return aa !== bb ? (aa ? -1 : 1) : String(a.name).localeCompare(String(b.name));
-  });
+  const isActive = e => e.active === true || e.active === 'TRUE';
+  const list = emps.slice().sort((a, b) =>
+    isActive(a) !== isActive(b) ? (isActive(a) ? -1 : 1) : String(a.name).localeCompare(String(b.name)));
   const rows = list.map(e => [
-    e.name, e.dept || '', e.active === true || e.active === 'TRUE' ? 'Active' : 'Removed',
+    e.name, e.dept || '', isActive(e) ? 'Active' : 'Removed',
     Number(e.createdAt) ? new Date(Number(e.createdAt)) : '',
   ]);
-  const sh = table_(ss, TAB.emps, head, rows, { widths: [220, 180, 110, 130], formats: ['@', '@', '@', 'dd mmm yyyy'], center: [3, 4] });
+  const active = list.filter(isActive).length;
+  const sh = table_(ss, TAB.emps, 'Employees', active + ' active' + (list.length > active ? ', ' + (list.length - active) + ' removed' : '') + '  |  ' + stamp, head, rows, {
+    widths: [220, 180, 110, 130],
+    formats: ['@', '@', '@', 'dd mmm yyyy'],
+    center: [3, 4],
+    bold: [1],
+  });
   if (rows.length) {
-    const r = sh.getRange(2, 3, rows.length, 1);
-    r.setFontWeight('bold');
-    sh.setConditionalFormatRules([
-      SpreadsheetApp.newConditionalFormatRule().setRanges([r]).whenTextEqualTo('Active').setBackground(C.inSoft).setFontColor(C.ink).build(),
-      SpreadsheetApp.newConditionalFormatRule().setRanges([r]).whenTextEqualTo('Removed').setBackground('#efeadf').setFontColor(C.muted).build(),
-    ]);
+    const r = dataCol_(sh, 3, rows.length);
+    sh.setConditionalFormatRules([textRule_(r, 'Active', C.ink), textRule_(r, 'Removed', C.muted, true)]);
   }
 }
 
-/* Dashboard layout (columns B to I, A is a margin):
-   2-3   title band
-   5     month picker
-   7-9   four KPI tiles
-   11    "Employee summary" heading, 12 table header, 13.. rows, then a total row
-   then  "Out right now" list and the chart */
-function buildDashboard_(ss, emps, days, tz) {
+/* Dashboard layout (content in columns B to I, A and J are margins):
+   1-4   navy title band with a gold rule
+   6     month picker
+   8-10  four summary cards
+   12..  "Employee Summary" table with a total row
+   then  "Out Right Now" and the chart */
+function buildDashboard_(ss, emps, days, tz, stamp) {
   let sh = ss.getSheetByName(TAB.dash);
-  const prevMonth = sh ? String(sh.getRange('C5').getValue() || '') : '';
+  let prevMonth = '';
+  if (sh) {
+    const pv = String(sh.getRange('C6').getValue() || sh.getRange('C5').getValue() || '');
+    prevMonth = pv;
+  }
   sh = resetSheet_(ss, TAB.dash);
 
   const months = [];
@@ -332,77 +347,86 @@ function buildDashboard_(ss, emps, days, tz) {
   const options = months.concat([ALL_MONTHS]);
   const month = options.indexOf(prevMonth) >= 0 ? prevMonth : thisMonth;
 
+  const isActive = e => e.active === true || e.active === 'TRUE';
   const withData = new Set(days.map(d => String(d.emp.id)));
-  const people = emps.filter(e => e.active === true || e.active === 'TRUE' || withData.has(String(e.id)))
+  const people = emps.filter(e => isActive(e) || withData.has(String(e.id)))
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const n = Math.max(people.length, 1);
-  const top = 13, totalRow = top + n;
-  const outNowRow = totalRow + 3;
+  const secRow = 12, headRow = 13, top = 14, totalRow = top + n;
+  const outRow = totalRow + 3;
 
-  ensureSize_(sh, Math.max(outNowRow + 40, 60), 12);
+  const W = 10; // columns A..J
+  ensureSize_(sh, Math.max(outRow + 60, 80), 12);
+  trimSize_(sh, Math.max(outRow + 60, 80), 12);
+  const all = sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns());
+  all.setFontFamily(BODY).setFontSize(10).setFontColor(C.text).setVerticalAlignment('middle').setBackground(C.cream);
+  sh.setRowHeights(1, sh.getMaxRows(), 22);
   sh.setHiddenGridlines(true);
-  sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).setFontFamily(FONT).setFontColor(C.text).setVerticalAlignment('middle');
-  sh.setColumnWidth(1, 24);
-  [200, 150, 110, 100, 110, 130, 120, 100].forEach((w, i) => sh.setColumnWidth(i + 2, w));
-  sh.setColumnWidth(10, 24);
-  sh.setColumnWidth(11, 24);
-  sh.hideColumns(12); // L5 holds the criteria used by every formula
+  sh.setColumnWidth(1, 28);
+  [190, 140, 110, 100, 110, 130, 120, 100].forEach((w, i) => sh.setColumnWidth(i + 2, w));
+  sh.setColumnWidth(10, 28);
+  sh.setColumnWidth(11, 28);
+  sh.hideColumns(12); // L6 holds the month criteria used by every formula
 
   // Title band
-  sh.getRange('A1:J1').setBackground(C.brand);
-  sh.getRange('A2:J3').setBackground(C.brand);
-  sh.setRowHeight(1, 10);
-  sh.setRowHeight(2, 42);
+  sh.getRange(1, 1, 4, W).setBackground(C.navy);
+  sh.setRowHeight(1, 16);
+  sh.setRowHeight(2, 44);
   sh.setRowHeight(3, 24);
   sh.setRowHeight(4, 14);
-  sh.getRange('B2').setValue('In-Out Register').setFontSize(22).setFontWeight('bold').setFontColor(C.white);
-  sh.getRange('B3').setValue('Last updated ' + Utilities.formatDate(new Date(), tz, "d MMM yyyy 'at' h:mm a"))
-    .setFontSize(10).setFontColor(C.creamText);
-  sh.getRange('I2:I3').merge().setValue(ss.getSpreadsheetTimeZone()).setFontSize(9).setFontColor(C.creamText).setHorizontalAlignment('right');
+  sh.getRange(5, 1, 1, W).setBackground(C.gold);
+  sh.setRowHeight(5, 3);
+  sh.getRange('B2').setValue('In-Out Register').setFontFamily(TITLE).setFontSize(24).setFontColor(C.cream);
+  sh.getRange('B3').setValue('Attendance overview  |  ' + stamp).setFontSize(9).setFontColor(C.creamMuted);
+  sh.getRange('G2:I3').merge().setValue(ss.getSpreadsheetTimeZone().replace('_', ' '))
+    .setFontSize(9).setFontColor(C.creamMuted).setHorizontalAlignment('right').setVerticalAlignment('bottom');
 
-  // Month picker
-  sh.setRowHeight(5, 34);
-  sh.getRange('B5').setValue('Showing').setFontColor(C.muted).setFontWeight('bold').setHorizontalAlignment('right');
-  const pick = sh.getRange('C5:D5').merge();
-  pick.setNumberFormat('@').setValue(month).setFontWeight('bold').setFontSize(12).setFontColor(C.brandDark).setBackground(C.brandSoft)
-    .setHorizontalAlignment('center').setBorder(true, true, true, true, false, false, C.brand, SpreadsheetApp.BorderStyle.SOLID);
+  // Month picker (row 6, after a spacer that is row 5's gold rule)
+  sh.setRowHeight(6, 40);
+  sh.getRange('B6').setValue('MONTH').setFontSize(8).setFontWeight('bold').setFontColor(C.muted).setHorizontalAlignment('right');
+  const pick = sh.getRange('C6:D6').merge();
+  pick.setNumberFormat('@').setValue(month).setFontFamily(TITLE).setFontSize(13).setFontColor(C.navy)
+    .setBackground(C.paper).setHorizontalAlignment('center')
+    .setBorder(true, true, true, true, false, false, C.navy, SpreadsheetApp.BorderStyle.SOLID);
   pick.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(options, true).setAllowInvalid(false).build());
-  sh.getRange('E5:G5').merge().setValue('Change the month here; every number below updates.').setFontSize(9).setFontColor(C.muted).setFontStyle('italic');
-  sh.getRange('L5').setFormula('=IF($C$5="' + ALL_MONTHS + '","*",$C$5)');
-  const crit = '$L$5';
+  sh.getRange('E6:I6').merge().setValue('Choose a month and every figure below updates.')
+    .setFontSize(9).setFontColor(C.muted).setFontStyle('italic');
+  sh.getRange('L6').setFormula('=IF($C$6="' + ALL_MONTHS + '","*",$C$6)');
+  const crit = '$L$6';
   const D = "'" + TAB.daily + "'!";
-  const col = c => D + '$' + c + '$2:$' + c;
+  const col = letter => D + '$' + letter + '$' + FR + ':$' + letter;
+  // Daily tab columns (shifted by the margin): D employee, H times out, I time out, J time inside, M month
+  const EMP = col('D'), TIMES = col('H'), OUT = col('I'), INSIDE = col('J'), MONTH = col('M');
 
-  // KPI tiles
-  sh.setRowHeight(6, 14);
-  sh.setRowHeight(7, 22);
-  sh.setRowHeight(8, 40);
-  sh.setRowHeight(9, 8);
-  const tiles = [
-    ['B', 'C', 'Employees', '=' + people.filter(e => e.active === true || e.active === 'TRUE').length, '0'],
-    ['D', 'E', 'Times out', '=SUMIFS(' + col('G') + ',' + col('L') + ',' + crit + ')', '0'],
-    ['F', 'G', 'Total time out', '=SUMIFS(' + col('H') + ',' + col('L') + ',' + crit + ')', '[h]:mm'],
-    ['H', 'I', 'Average out per day', '=IFERROR(SUMIFS(' + col('H') + ',' + col('L') + ',' + crit + ')/COUNTIFS(' + col('L') + ',' + crit + '),0)', '[h]:mm'],
+  // Summary cards
+  sh.setRowHeight(7, 14);
+  sh.setRowHeight(8, 26);
+  sh.setRowHeight(9, 44);
+  sh.setRowHeight(10, 3);
+  sh.setRowHeight(11, 22);
+  const cards = [
+    ['B', 'C', 'Employees', '=' + people.filter(isActive).length, '0'],
+    ['D', 'E', 'Times out', '=SUMIFS(' + TIMES + ',' + MONTH + ',' + crit + ')', '0'],
+    ['F', 'G', 'Total time out', '=SUMIFS(' + OUT + ',' + MONTH + ',' + crit + ')', '[h]:mm'],
+    ['H', 'I', 'Average per day', '=IFERROR(SUMIFS(' + OUT + ',' + MONTH + ',' + crit + ')/COUNTIFS(' + MONTH + ',' + crit + '),0)', '[h]:mm'],
   ];
-  tiles.forEach(t => {
-    const label = sh.getRange(t[0] + '7:' + t[1] + '7').merge();
-    const value = sh.getRange(t[0] + '8:' + t[1] + '8').merge();
-    const whole = sh.getRange(t[0] + '7:' + t[1] + '9');
-    whole.setBackground(C.band);
-    sh.getRange(t[0] + '9:' + t[1] + '9').setBackground(C.brand);
-    label.setValue(t[2].toUpperCase()).setFontSize(9).setFontWeight('bold').setFontColor(C.muted).setHorizontalAlignment('center');
-    value.setFormula(t[3]).setNumberFormat(t[4]).setFontSize(22).setFontWeight('bold').setFontColor(C.brandDark).setHorizontalAlignment('center');
+  cards.forEach(t => {
+    sh.getRange(t[0] + '8:' + t[1] + '9').setBackground(C.paper);
+    sh.getRange(t[0] + '10:' + t[1] + '10').setBackground(C.gold);
+    sh.getRange(t[0] + '8:' + t[1] + '8').merge().setValue(t[2].toUpperCase())
+      .setFontSize(8).setFontWeight('bold').setFontColor(C.muted).setHorizontalAlignment('center').setVerticalAlignment('bottom');
+    sh.getRange(t[0] + '9:' + t[1] + '9').merge().setFormula(t[3]).setNumberFormat(t[4])
+      .setFontFamily(TITLE).setFontSize(22).setFontColor(C.navy).setHorizontalAlignment('center');
+    // cream gutters between the cards
+    sh.getRange(t[0] + '8:' + t[1] + '10').setBorder(null, true, null, true, null, null, C.cream, SpreadsheetApp.BorderStyle.SOLID_THICK);
   });
 
   // Employee summary
-  sh.setRowHeight(10, 18);
-  sh.getRange('B11').setValue('Employee summary').setFontSize(13).setFontWeight('bold').setFontColor(C.brandDark);
+  sh.setRowHeight(secRow, 34);
+  sh.getRange(secRow, 2).setValue('Employee Summary').setFontFamily(TITLE).setFontSize(15).setFontColor(C.navy).setVerticalAlignment('bottom');
   const head = ['Employee', 'Department', 'Days present', 'Times out', 'Time out', 'Average per day', 'Time inside', 'Hours out'];
-  sh.getRange(12, 2, 1, head.length).setValues([head])
-    .setBackground(C.brand).setFontColor(C.white).setFontWeight('bold').setFontSize(10)
-    .setHorizontalAlignment('center').setWrap(true);
-  sh.getRange(12, 2).setHorizontalAlignment('left');
-  sh.setRowHeight(12, 32);
+  headerRow_(sh.getRange(headRow, 2, 1, head.length), head);
+  sh.getRange(headRow, 4, 1, head.length - 2).setHorizontalAlignment('center');
 
   const rows = [];
   if (people.length) {
@@ -411,11 +435,11 @@ function buildDashboard_(ss, emps, days, tz) {
       const who = '$B' + r;
       rows.push([
         e.name, e.dept || '',
-        '=COUNTIFS(' + col('C') + ',' + who + ',' + col('L') + ',' + crit + ')',
-        '=SUMIFS(' + col('G') + ',' + col('C') + ',' + who + ',' + col('L') + ',' + crit + ')',
-        '=SUMIFS(' + col('H') + ',' + col('C') + ',' + who + ',' + col('L') + ',' + crit + ')',
+        '=COUNTIFS(' + EMP + ',' + who + ',' + MONTH + ',' + crit + ')',
+        '=SUMIFS(' + TIMES + ',' + EMP + ',' + who + ',' + MONTH + ',' + crit + ')',
+        '=SUMIFS(' + OUT + ',' + EMP + ',' + who + ',' + MONTH + ',' + crit + ')',
         '=IFERROR(F' + r + '/D' + r + ',0)',
-        '=SUMIFS(' + col('I') + ',' + col('C') + ',' + who + ',' + col('L') + ',' + crit + ')',
+        '=SUMIFS(' + INSIDE + ',' + EMP + ',' + who + ',' + MONTH + ',' + crit + ')',
         '=ROUND(F' + r + '*24,2)',
       ]);
     });
@@ -423,78 +447,78 @@ function buildDashboard_(ss, emps, days, tz) {
     rows.push(['No employees yet', '', '', '', '', '', '', '']);
   }
   const body = sh.getRange(top, 2, rows.length, head.length);
-  body.setValues(rows).setFontSize(10);
+  body.setValues(rows);
+  bodyStyle_(sh, body, rows.length);
   sh.getRange(top, 4, rows.length, 2).setNumberFormat('0').setHorizontalAlignment('center');
   sh.getRange(top, 6, rows.length, 3).setNumberFormat('[h]:mm').setHorizontalAlignment('center');
   sh.getRange(top, 9, rows.length, 1).setNumberFormat('0.00').setHorizontalAlignment('center').setFontColor(C.muted);
-  sh.getRange(top, 6, rows.length, 1).setFontWeight('bold');
   sh.getRange(top, 2, rows.length, 1).setFontWeight('bold');
-  for (let i = 0; i < rows.length; i++) {
-    sh.setRowHeight(top + i, 26);
-    if (i % 2) sh.getRange(top + i, 2, 1, head.length).setBackground(C.band);
-  }
-  body.setBorder(null, null, true, null, null, true, C.line, SpreadsheetApp.BorderStyle.SOLID);
+  sh.getRange(top, 6, rows.length, 1).setFontWeight('bold');
+  sh.getRange(top, 3, rows.length, 1).setFontColor(C.muted);
 
-  // Total row
-  const tr = sh.getRange(totalRow, 2, 1, head.length);
-  tr.setValues([[
+  const last = totalRow - 1;
+  sh.getRange(totalRow, 2, 1, head.length).setValues([[
     'Total', '',
-    '=SUM(D' + top + ':D' + (totalRow - 1) + ')', '=SUM(E' + top + ':E' + (totalRow - 1) + ')',
-    '=SUM(F' + top + ':F' + (totalRow - 1) + ')', '=IFERROR(F' + totalRow + '/D' + totalRow + ',0)',
-    '=SUM(H' + top + ':H' + (totalRow - 1) + ')', '=SUM(I' + top + ':I' + (totalRow - 1) + ')',
-  ]]).setFontWeight('bold').setBackground(C.brandSoft).setFontColor(C.brandDark)
-    .setBorder(true, null, true, null, null, null, C.brand, SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+    '=SUM(D' + top + ':D' + last + ')', '=SUM(E' + top + ':E' + last + ')',
+    '=SUM(F' + top + ':F' + last + ')', '=IFERROR(F' + totalRow + '/D' + totalRow + ',0)',
+    '=SUM(H' + top + ':H' + last + ')', '=SUM(I' + top + ':I' + last + ')',
+  ]]).setFontWeight('bold').setFontColor(C.navy).setBackground(C.sand)
+    .setBorder(true, null, true, null, null, null, C.navy, SpreadsheetApp.BorderStyle.SOLID);
+  sh.getRange(totalRow, 2).setFontFamily(TITLE).setFontSize(11);
   sh.getRange(totalRow, 4, 1, 2).setNumberFormat('0').setHorizontalAlignment('center');
   sh.getRange(totalRow, 6, 1, 3).setNumberFormat('[h]:mm').setHorizontalAlignment('center');
   sh.getRange(totalRow, 9).setNumberFormat('0.00').setHorizontalAlignment('center');
-  sh.setRowHeight(totalRow, 28);
-
+  sh.setRowHeight(totalRow, 30);
   if (people.length) {
-    sh.setConditionalFormatRules([
-      SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(top, 6, people.length, 1)])
-        .setGradientMinpointWithValue(C.white, SpreadsheetApp.InterpolationType.NUMBER, '0')
-        .setGradientMaxpointWithValue('#e9a27f', SpreadsheetApp.InterpolationType.MAX, '').build(),
-    ]);
+    const g = SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(top, 6, people.length, 1)])
+      .setGradientMinpointWithValue(C.paper, SpreadsheetApp.InterpolationType.NUMBER, '0')
+      .setGradientMaxpointWithValue(C.heat, SpreadsheetApp.InterpolationType.MAX, '').build();
+    sh.setConditionalFormatRules([g]);
   }
 
   // Out right now (as of this update)
-  const outNow = days.filter(d => d.isToday && d.last.type === 'out')
-    .sort((a, b) => a.last.ts - b.last.ts);
-  sh.getRange(outNowRow, 2).setValue('Out right now').setFontSize(13).setFontWeight('bold').setFontColor(C.brandDark);
-  sh.getRange(outNowRow, 3, 1, 3).merge().setValue('As of the last update. Includes anyone who has left for the day.')
-    .setFontSize(9).setFontColor(C.muted).setFontStyle('italic');
-  const oh = sh.getRange(outNowRow + 1, 2, 1, 4);
-  oh.setValues([['Employee', 'Out since', 'Reason', 'Department']]).setBackground(C.out).setFontColor(C.white).setFontWeight('bold').setFontSize(10);
+  const outNow = days.filter(d => d.isToday && d.last.type === 'out').sort((a, b) => a.last.ts - b.last.ts);
+  sh.setRowHeight(outRow, 34);
+  sh.getRange(outRow, 2).setValue('Out Right Now').setFontFamily(TITLE).setFontSize(15).setFontColor(C.navy).setVerticalAlignment('bottom');
+  sh.getRange(outRow, 3, 1, 4).merge().setValue('As of the last update, including anyone who has left for the day')
+    .setFontSize(9).setFontColor(C.muted).setFontStyle('italic').setVerticalAlignment('bottom');
+  headerRow_(sh.getRange(outRow + 1, 2, 1, 4), ['Employee', 'Out since', 'Reason', 'Department']);
+  sh.getRange(outRow + 1, 3).setHorizontalAlignment('center');
   let outRows = outNow.map(d => [d.emp.name, d.last.date, d.last.reason || NO_REASON, d.emp.dept || '']);
-  if (!outRows.length) outRows = [['Nobody is out', '', '', '']];
-  const ob = sh.getRange(outNowRow + 2, 2, outRows.length, 4);
-  ob.setValues(outRows).setFontSize(10).setBackground(C.outSoft)
-    .setBorder(null, null, true, null, null, true, '#ecc9b5', SpreadsheetApp.BorderStyle.SOLID);
-  sh.getRange(outNowRow + 2, 3, outRows.length, 1).setNumberFormat('h:mm am/pm').setHorizontalAlignment('center');
-  sh.getRange(outNowRow + 2, 2, outRows.length, 1).setFontWeight('bold');
+  const nobody = !outRows.length;
+  if (nobody) outRows = [['Everyone is in', '', '', '']];
+  const ob = sh.getRange(outRow + 2, 2, outRows.length, 4);
+  ob.setValues(outRows);
+  bodyStyle_(sh, ob, outRows.length);
+  sh.getRange(outRow + 2, 3, outRows.length, 1).setNumberFormat('h:mm am/pm').setHorizontalAlignment('center').setFontColor(C.out).setFontWeight('bold');
+  sh.getRange(outRow + 2, 2, outRows.length, 1).setFontWeight('bold');
+  if (nobody) sh.getRange(outRow + 2, 2).setFontWeight('normal').setFontStyle('italic').setFontColor(C.muted);
 
   // Chart of hours out per employee for the chosen month
   if (people.length) {
-    const chartRow = outNowRow + 3 + outRows.length;
+    const chartRow = outRow + 4 + outRows.length;
+    const font = { fontName: BODY, color: C.text, fontSize: 10 };
     const chart = sh.newChart()
       .setChartType(Charts.ChartType.BAR)
       .addRange(sh.getRange(top, 2, people.length, 1))
       .addRange(sh.getRange(top, 9, people.length, 1))
       .setPosition(chartRow, 2, 0, 0)
-      .setOption('title', 'Hours out by employee (selected month)')
-      .setOption('titleTextStyle', { color: C.brandDark, fontSize: 14, bold: true })
+      .setOption('title', 'Hours out by employee, selected month')
+      .setOption('titleTextStyle', { fontName: TITLE, color: C.navy, fontSize: 15, bold: false })
       .setOption('legend', { position: 'none' })
-      .setOption('colors', [C.out])
-      .setOption('backgroundColor', C.white)
-      .setOption('hAxis', { title: 'Hours', minValue: 0, gridlines: { color: '#efeadf' } })
+      .setOption('colors', [C.navy])
+      .setOption('backgroundColor', { fill: C.paper, stroke: C.hair, strokeWidth: 1 })
+      .setOption('chartArea', { left: 150, top: 50, right: 30, bottom: 50 })
+      .setOption('hAxis', { title: 'Hours', minValue: 0, textStyle: font, titleTextStyle: font, gridlines: { color: C.hair }, baselineColor: C.hair })
+      .setOption('vAxis', { textStyle: font })
+      .setOption('bar', { groupWidth: '62%' })
       .setOption('width', 860)
-      .setOption('height', Math.max(260, people.length * 30 + 90))
+      .setOption('height', Math.max(260, people.length * 30 + 100))
       .build();
     sh.insertChart(chart);
   }
 
-  sh.setFrozenRows(5);
-  ss.setActiveSheet(sh);
+  sh.setFrozenRows(6);
 }
 
 /* ---------------- Shared table styling ---------------- */
@@ -506,11 +530,12 @@ function resetSheet_(ss, name) {
   sh.getBandings().forEach(b => b.remove());
   if (sh.getFilter()) sh.getFilter().remove();
   sh.setConditionalFormatRules([]);
+  sh.setFrozenRows(0);
+  sh.setFrozenColumns(0);
   const all = sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns());
   all.breakApart();
   all.clearDataValidations();
   sh.clear();
-  sh.setFrozenRows(0);
   sh.showColumns(1, sh.getMaxColumns());
   return sh;
 }
@@ -525,46 +550,71 @@ function trimSize_(sh, rows, cols) {
   if (sh.getMaxColumns() > cols) sh.deleteColumns(cols + 1, sh.getMaxColumns() - cols);
 }
 
-function table_(ss, name, head, rows, opt) {
+function headerRow_(range, labels) {
+  range.setValues([labels.map(l => String(l).toUpperCase())])
+    .setBackground(C.navy).setFontColor(C.cream).setFontFamily(BODY).setFontWeight('bold').setFontSize(8)
+    .setHorizontalAlignment('left').setVerticalAlignment('middle')
+    .setBorder(null, null, true, null, null, null, C.gold, SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+  range.getSheet().setRowHeight(range.getRow(), 32);
+}
+
+function bodyStyle_(sh, range, n) {
+  range.setFontFamily(BODY).setFontSize(10).setFontColor(C.text).setVerticalAlignment('middle')
+    .setBorder(null, null, true, null, null, true, C.hair, SpreadsheetApp.BorderStyle.SOLID);
+  sh.setRowHeightsForced(range.getRow(), n, 30);
+  for (let i = 0; i < n; i++) sh.getRange(range.getRow() + i, range.getColumn(), 1, range.getNumColumns()).setBackground(i % 2 ? C.band : C.paper);
+}
+
+function table_(ss, name, title, subtitle, head, rows, opt) {
   const sh = resetSheet_(ss, name);
   const nCols = head.length, nRows = Math.max(rows.length, 1);
-  ensureSize_(sh, nRows + 1, nCols);
-  trimSize_(sh, nRows + 1, nCols);
+  const lastRow = FR + nRows - 1, totalCols = nCols + CO + 1;
+  ensureSize_(sh, lastRow + 2, totalCols);
+  trimSize_(sh, lastRow + 2, totalCols);
   sh.setHiddenGridlines(true);
-  sh.getRange(1, 1, nRows + 1, nCols).setFontFamily(FONT).setFontSize(10).setFontColor(C.text).setVerticalAlignment('middle');
+  sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns())
+    .setFontFamily(BODY).setFontSize(10).setFontColor(C.text).setVerticalAlignment('middle').setBackground(C.paper);
+  sh.setRowHeights(1, sh.getMaxRows(), 22);
+  sh.setColumnWidth(1, 28);
+  sh.setColumnWidth(totalCols, 28);
 
-  const h = sh.getRange(1, 1, 1, nCols);
-  h.setValues([head]).setBackground(C.brand).setFontColor(C.white).setFontWeight('bold').setHorizontalAlignment('left');
-  sh.setRowHeight(1, 34);
-  sh.setFrozenRows(1);
+  // Title block
+  sh.setRowHeight(1, 16);
+  sh.setRowHeight(2, 40);
+  sh.setRowHeight(3, 22);
+  sh.setRowHeight(4, 14);
+  sh.getRange(2, 1 + CO).setValue(title).setFontFamily(TITLE).setFontSize(20).setFontColor(C.navy).setVerticalAlignment('bottom');
+  sh.getRange(3, 1 + CO).setValue(subtitle).setFontSize(9).setFontColor(C.muted).setVerticalAlignment('top');
+  sh.getRange(3, 1 + CO, 1, nCols).setBorder(null, null, true, null, null, null, C.gold, SpreadsheetApp.BorderStyle.SOLID);
+
+  headerRow_(sh.getRange(HR, 1 + CO, 1, nCols), head);
+  sh.setFrozenRows(HR);
 
   if (rows.length) {
-    const body = sh.getRange(2, 1, rows.length, nCols);
-    (opt.formats || []).forEach((f, i) => sh.getRange(2, i + 1, rows.length, 1).setNumberFormat(f));
+    (opt.formats || []).forEach((f, i) => sh.getRange(FR, i + 1 + CO, rows.length, 1).setNumberFormat(f));
+    const body = sh.getRange(FR, 1 + CO, rows.length, nCols);
     body.setValues(rows);
-    sh.setRowHeightsForced(2, rows.length, 26);
-    body.applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, false, false)
-      .setFirstRowColor(C.white).setSecondRowColor(C.band);
-    body.setBorder(null, null, true, null, null, true, C.line, SpreadsheetApp.BorderStyle.SOLID);
-    sh.getRange(1, 1, rows.length + 1, nCols).createFilter();
+    body.applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, false, false).setFirstRowColor(C.paper).setSecondRowColor(C.band);
+    body.setBorder(null, null, true, null, null, true, C.hair, SpreadsheetApp.BorderStyle.SOLID);
+    sh.setRowHeightsForced(FR, rows.length, 30);
+    (opt.bold || []).forEach(c => sh.getRange(FR, c + CO, rows.length, 1).setFontWeight('bold'));
   } else {
-    sh.getRange(2, 1).setValue('No entries yet').setFontColor(C.muted).setFontStyle('italic');
+    sh.getRange(FR, 1 + CO).setValue('No entries yet').setFontColor(C.muted).setFontStyle('italic');
+    sh.setRowHeight(FR, 30);
   }
-  (opt.center || []).forEach(c => sh.getRange(1, c, nRows + 1, 1).setHorizontalAlignment('center'));
-  (opt.widths || []).forEach((w, i) => sh.setColumnWidth(i + 1, w));
+  (opt.center || []).forEach(c => sh.getRange(HR, c + CO, nRows + 1, 1).setHorizontalAlignment('center'));
+  (opt.widths || []).forEach((w, i) => sh.setColumnWidth(i + 1 + CO, w));
   return sh;
 }
 
 function orderTabs_(ss) {
-  [TAB.dash, TAB.daily, TAB.away, TAB.log, TAB.emps].forEach((name, i) => {
+  const order = [TAB.dash, TAB.daily, TAB.away, TAB.log, TAB.emps];
+  order.forEach((name, i) => {
     const sh = ss.getSheetByName(name);
     if (!sh) return;
     ss.setActiveSheet(sh);
     ss.moveActiveSheet(i + 1);
-  });
-  [TAB.dash, TAB.daily, TAB.away, TAB.log, TAB.emps].forEach((name, i) => {
-    const sh = ss.getSheetByName(name);
-    if (sh) sh.setTabColor([C.brand, '#2b4c8c', C.out, '#6e6a60', C.ink][i]);
+    sh.setTabColor(i === 0 ? C.navy : C.gold);
   });
   // Remove the empty "Sheet1" a new spreadsheet starts with.
   const blank = ss.getSheetByName('Sheet1');
