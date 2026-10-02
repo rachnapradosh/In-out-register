@@ -62,7 +62,7 @@ The badge at the top right shows the backup state: **Backed up**, **3 waiting** 
 | Tab | What it shows |
 |---|---|
 | **Dashboard** | A month picker (change it and every number updates), totals, a summary for each employee, a chart of hours out, and who is out right now |
-| **Daily** | One row per employee per day: first IN, left at, times out, time out, time inside, reasons |
+| **Daily** | One row per employee per day: first IN, left at, times out, time out, reasons |
 | **Time Out** | Every OUT and the IN that followed it, with the duration and reason |
 | **Punch Log** | Every single IN and OUT, newest first |
 | **Employees** | The employee list |

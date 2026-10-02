@@ -168,7 +168,7 @@ function computeDays_(emps, punches, tz) {
     list.sort((a, b) => a.ts - b.ts);
     const parts = key.split('|');
     const emp = byEmp.get(parts[0]) || { id: parts[0], name: 'Unknown', dept: '' };
-    const st = { key: parts[1], emp: emp, list: list, firstIn: null, leftAt: null, away: [], awayMin: 0, insideMin: 0, openIn: null, last: list[list.length - 1] };
+    const st = { key: parts[1], emp: emp, list: list, firstIn: null, leftAt: null, away: [], awayMin: 0, openIn: null, last: list[list.length - 1] };
     for (let i = 0; i < list.length; i++) {
       const a = list[i], b = list[i + 1];
       if (a.type === 'in' && !st.firstIn) st.firstIn = a.date;
@@ -176,9 +176,7 @@ function computeDays_(emps, punches, tz) {
       if (a.type === 'out') {
         if (b) { const m = (b.ts - a.ts) / 60000; st.away.push({ out: a, back: b, min: m }); st.awayMin += m; }
         else st.leftAt = a.date;
-      } else if (b) {
-        st.insideMin += (b.ts - a.ts) / 60000;
-      } else {
+      } else if (!b) {
         st.openIn = a;
       }
     }
@@ -191,6 +189,7 @@ function computeDays_(emps, punches, tz) {
 }
 
 const dur_ = min => Math.round(min) / 1440; // minutes as a Sheets duration
+const DUR = '[h]"h" mm"m"'; // shows 3h 05m
 const fmtMin_ = m => { m = Math.round(m); return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + ('0' + (m % 60)).slice(-2) + 'm'; };
 
 /* ---------------- Building the visible tabs ---------------- */
@@ -229,7 +228,7 @@ const textRule_ = (range, text, color, italic) => {
 };
 
 function buildDaily_(ss, days, stamp) {
-  const head = ['Date', 'Day', 'Employee', 'Department', 'First in', 'Left at', 'Times out', 'Time out', 'Time inside', 'Reasons', 'Notes', 'Month'];
+  const head = ['Date', 'Day', 'Employee', 'Department', 'First in', 'Left at', 'Times out', 'Time out', 'Reasons', 'Notes', 'Month'];
   const rows = days.map(d => {
     const reasons = {};
     d.away.forEach(a => { const r = a.out.reason || NO_REASON; reasons[r] = (reasons[r] || 0) + a.min; });
@@ -238,24 +237,24 @@ function buildDaily_(ss, days, stamp) {
     if (d.isToday && d.last.type === 'out') flags.push('Out now');
     return [
       d.list[0].date, d.list[0].date, d.emp.name, d.emp.dept || '',
-      d.firstIn || '', d.leftAt || '', d.away.length, dur_(d.awayMin), dur_(d.insideMin),
+      d.firstIn || '', d.leftAt || '', d.away.length, dur_(d.awayMin),
       Object.keys(reasons).map(r => r + ' ' + fmtMin_(reasons[r])).join(', '), flags.join(', '), d.month,
     ];
   });
   const sh = table_(ss, TAB.daily, 'Daily Record', 'One line per employee per day  |  ' + stamp, head, rows, {
-    widths: [118, 52, 180, 130, 90, 90, 84, 90, 100, 260, 160, 110],
-    formats: ['dd mmm yyyy', 'ddd', '@', '@', 'h:mm am/pm', 'h:mm am/pm', '0', '[h]:mm', '[h]:mm', '@', '@', '@'],
-    center: [2, 5, 6, 7, 8, 9],
+    widths: [118, 52, 180, 130, 90, 90, 84, 96, 260, 160, 110],
+    formats: ['dd mmm yyyy', 'ddd', '@', '@', 'h:mm am/pm', 'h:mm am/pm', '0', DUR, '@', '@', '@'],
+    center: [2, 5, 6, 7, 8],
     bold: [3, 8],
   });
-  sh.hideColumns(12 + CO);
+  sh.hideColumns(11 + CO);
   if (rows.length) {
     const n = rows.length;
     sh.setConditionalFormatRules([
       gradient_(dataCol_(sh, 8, n)),
-      SpreadsheetApp.newConditionalFormatRule().setRanges([dataCol_(sh, 11, n)])
+      SpreadsheetApp.newConditionalFormatRule().setRanges([dataCol_(sh, 10, n)])
         .whenTextContains('No OUT').setFontColor(C.warn).setItalic(true).build(),
-      SpreadsheetApp.newConditionalFormatRule().setRanges([dataCol_(sh, 11, n)])
+      SpreadsheetApp.newConditionalFormatRule().setRanges([dataCol_(sh, 10, n)])
         .whenTextContains('Out now').setFontColor(C.out).setItalic(true).build(),
     ]);
     dataCol_(sh, 2, n).setFontColor(C.muted);
@@ -273,7 +272,7 @@ function buildAway_(ss, days, stamp) {
   ]);
   const sh = table_(ss, TAB.away, 'Time Out', 'Every OUT and the IN that followed it, newest first  |  ' + stamp, head, rows, {
     widths: [118, 180, 130, 92, 92, 90, 140, 260],
-    formats: ['dd mmm yyyy', '@', '@', 'h:mm am/pm', 'h:mm am/pm', '[h]:mm', '@', '@'],
+    formats: ['dd mmm yyyy', '@', '@', 'h:mm am/pm', 'h:mm am/pm', DUR, '@', '@'],
     center: [4, 5, 6],
     bold: [2, 6],
   });
@@ -363,7 +362,7 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   sh.setRowHeights(1, sh.getMaxRows(), 22);
   sh.setHiddenGridlines(true);
   sh.setColumnWidth(1, 28);
-  [190, 140, 110, 100, 110, 130, 120, 100].forEach((w, i) => sh.setColumnWidth(i + 2, w));
+  [190, 150, 110, 100, 120, 140, 110, 70].forEach((w, i) => sh.setColumnWidth(i + 2, w));
   sh.setColumnWidth(10, 28);
   sh.setColumnWidth(11, 28);
   sh.hideColumns(12); // L6 holds the month criteria used by every formula
@@ -395,8 +394,8 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   const crit = '$L$6';
   const D = "'" + TAB.daily + "'!";
   const col = letter => D + '$' + letter + '$' + FR + ':$' + letter;
-  // Daily tab columns (shifted by the margin): D employee, H times out, I time out, J time inside, M month
-  const EMP = col('D'), TIMES = col('H'), OUT = col('I'), INSIDE = col('J'), MONTH = col('M');
+  // Daily tab columns (shifted by the margin): D employee, H times out, I time out, L month
+  const EMP = col('D'), TIMES = col('H'), OUT = col('I'), MONTH = col('L');
 
   // Summary cards
   sh.setRowHeight(7, 14);
@@ -407,8 +406,8 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   const cards = [
     ['B', 'C', 'Employees', '=' + people.filter(isActive).length, '0'],
     ['D', 'E', 'Times out', '=SUMIFS(' + TIMES + ',' + MONTH + ',' + crit + ')', '0'],
-    ['F', 'G', 'Total time out', '=SUMIFS(' + OUT + ',' + MONTH + ',' + crit + ')', '[h]:mm'],
-    ['H', 'I', 'Average per day', '=IFERROR(SUMIFS(' + OUT + ',' + MONTH + ',' + crit + ')/COUNTIFS(' + MONTH + ',' + crit + '),0)', '[h]:mm'],
+    ['F', 'G', 'Total time out', '=SUMIFS(' + OUT + ',' + MONTH + ',' + crit + ')', DUR],
+    ['H', 'I', 'Average per day', '=IFERROR(SUMIFS(' + OUT + ',' + MONTH + ',' + crit + ')/COUNTIFS(' + MONTH + ',' + crit + '),0)', DUR],
   ];
   cards.forEach(t => {
     sh.getRange(t[0] + '8:' + t[1] + '9').setBackground(C.paper);
@@ -424,7 +423,7 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
   // Employee summary
   sh.setRowHeight(secRow, 34);
   sh.getRange(secRow, 2).setValue('Employee Summary').setFontFamily(TITLE).setFontSize(15).setFontColor(C.navy).setVerticalAlignment('bottom');
-  const head = ['Employee', 'Department', 'Days present', 'Times out', 'Time out', 'Average per day', 'Time inside', 'Hours out'];
+  const head = ['Employee', 'Department', 'Days present', 'Times out', 'Time out', 'Average per day', 'Hours out'];
   headerRow_(sh.getRange(headRow, 2, 1, head.length), head);
   sh.getRange(headRow, 4, 1, head.length - 2).setHorizontalAlignment('center');
 
@@ -439,19 +438,18 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
         '=SUMIFS(' + TIMES + ',' + EMP + ',' + who + ',' + MONTH + ',' + crit + ')',
         '=SUMIFS(' + OUT + ',' + EMP + ',' + who + ',' + MONTH + ',' + crit + ')',
         '=IFERROR(F' + r + '/D' + r + ',0)',
-        '=SUMIFS(' + INSIDE + ',' + EMP + ',' + who + ',' + MONTH + ',' + crit + ')',
         '=ROUND(F' + r + '*24,2)',
       ]);
     });
   } else {
-    rows.push(['No employees yet', '', '', '', '', '', '', '']);
+    rows.push(['No employees yet', '', '', '', '', '', '']);
   }
   const body = sh.getRange(top, 2, rows.length, head.length);
   body.setValues(rows);
   bodyStyle_(sh, body, rows.length);
   sh.getRange(top, 4, rows.length, 2).setNumberFormat('0').setHorizontalAlignment('center');
-  sh.getRange(top, 6, rows.length, 3).setNumberFormat('[h]:mm').setHorizontalAlignment('center');
-  sh.getRange(top, 9, rows.length, 1).setNumberFormat('0.00').setHorizontalAlignment('center').setFontColor(C.muted);
+  sh.getRange(top, 6, rows.length, 2).setNumberFormat(DUR).setHorizontalAlignment('center');
+  sh.getRange(top, 8, rows.length, 1).setNumberFormat('0.00').setHorizontalAlignment('center').setFontColor(C.muted);
   sh.getRange(top, 2, rows.length, 1).setFontWeight('bold');
   sh.getRange(top, 6, rows.length, 1).setFontWeight('bold');
   sh.getRange(top, 3, rows.length, 1).setFontColor(C.muted);
@@ -461,13 +459,13 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
     'Total', '',
     '=SUM(D' + top + ':D' + last + ')', '=SUM(E' + top + ':E' + last + ')',
     '=SUM(F' + top + ':F' + last + ')', '=IFERROR(F' + totalRow + '/D' + totalRow + ',0)',
-    '=SUM(H' + top + ':H' + last + ')', '=SUM(I' + top + ':I' + last + ')',
+    '=SUM(H' + top + ':H' + last + ')',
   ]]).setFontWeight('bold').setFontColor(C.navy).setBackground(C.sand)
     .setBorder(true, null, true, null, null, null, C.navy, SpreadsheetApp.BorderStyle.SOLID);
   sh.getRange(totalRow, 2).setFontFamily(TITLE).setFontSize(11);
   sh.getRange(totalRow, 4, 1, 2).setNumberFormat('0').setHorizontalAlignment('center');
-  sh.getRange(totalRow, 6, 1, 3).setNumberFormat('[h]:mm').setHorizontalAlignment('center');
-  sh.getRange(totalRow, 9).setNumberFormat('0.00').setHorizontalAlignment('center');
+  sh.getRange(totalRow, 6, 1, 2).setNumberFormat(DUR).setHorizontalAlignment('center');
+  sh.getRange(totalRow, 8).setNumberFormat('0.00').setHorizontalAlignment('center');
   sh.setRowHeight(totalRow, 30);
   if (people.length) {
     const g = SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(top, 6, people.length, 1)])
@@ -501,7 +499,7 @@ function buildDashboard_(ss, emps, days, tz, stamp) {
     const chart = sh.newChart()
       .setChartType(Charts.ChartType.BAR)
       .addRange(sh.getRange(top, 2, people.length, 1))
-      .addRange(sh.getRange(top, 9, people.length, 1))
+      .addRange(sh.getRange(top, 8, people.length, 1))
       .setPosition(chartRow, 2, 0, 0)
       .setOption('title', 'Hours out by employee, selected month')
       .setOption('titleTextStyle', { fontName: TITLE, color: C.navy, fontSize: 15, bold: false })

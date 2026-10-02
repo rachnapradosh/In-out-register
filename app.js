@@ -84,14 +84,48 @@ const fmtDay = ts => {
   return new Date(ts).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 };
 const fmtMin = m => { m = Math.round(m); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${pad(m % 60)}m`; };
-const fmtHM = m => { m = Math.round(m); return `${Math.floor(m / 60)}:${pad(m % 60)}`; };
 const fmtElapsed = ms => {
   const s = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
   return h ? `${h}:${pad(m)}:${pad(x)}` : `${m}:${pad(x)}`;
 };
-const toLocalInput = ts => { const d = new Date(ts); return `${dayKey(ts)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
-const fromLocalInput = v => (v ? new Date(v).getTime() : null);
+const fmtDateFull = ts => new Date(ts).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+
+/* Date and time pickers. The phone's own datetime box shows 24-hour time
+   in whatever layout the phone uses, so the app draws its own:
+   a date button (opens the phone's calendar) and hour / minute / AM-PM. */
+function dateField(name, key, opts = {}) {
+  const change = opts.change ? `data-change="${opts.change}"` : 'data-change="date-label"';
+  return `<div class="date-btn" data-action="open-date">
+    <svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>
+    <span class="date-text"${opts.short ? ' data-short' : ''}>${(opts.short ? fmtDate : fmtDateFull)(keyToTs(key))}</span>
+    <input type="date" name="${name}" value="${key}" max="${todayKey()}" ${change} required tabindex="-1">
+  </div>`;
+}
+function timeField(ts) {
+  const d = new Date(ts);
+  const h = d.getHours() % 12 || 12, m = d.getMinutes(), pm = d.getHours() >= 12;
+  const opt = (v, label, sel) => `<option value="${v}" ${sel ? 'selected' : ''}>${label}</option>`;
+  return `<div class="time-pick">
+    <select class="input" name="hh" aria-label="Hour">${Array.from({ length: 12 }, (_, i) => opt(i + 1, i + 1, i + 1 === h)).join('')}</select>
+    <span class="colon">:</span>
+    <select class="input" name="mm" aria-label="Minute">${Array.from({ length: 60 }, (_, i) => opt(i, pad(i), i === m)).join('')}</select>
+    <div class="ampm">
+      <label><input type="radio" name="ap" value="AM" ${pm ? '' : 'checked'}><span>AM</span></label>
+      <label><input type="radio" name="ap" value="PM" ${pm ? 'checked' : ''}><span>PM</span></label>
+    </div>
+  </div>`;
+}
+function readDateTime(fd) {
+  const key = String(fd.get('date') || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return null;
+  const [y, mo, d] = key.split('-').map(Number);
+  const h = (Number(fd.get('hh')) % 12) + (fd.get('ap') === 'PM' ? 12 : 0);
+  return new Date(y, mo - 1, d, h, Number(fd.get('mm'))).getTime();
+}
+function shiftDay(key, days) {
+  const d = new Date(keyToTs(key)); d.setDate(d.getDate() + days); return dayKey(d.getTime());
+}
 const initials = name => name.trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 const buzz = () => { try { navigator.vibrate && navigator.vibrate(35); } catch { /* not supported */ } };
@@ -146,11 +180,10 @@ const statusOf = empId => statusFrom(todayIndex().get(empId));
 
 /* Works out one employee's day from their punches (oldest first).
    OUT followed by IN = time out of the office.
-   IN followed by OUT = time inside.
    A final OUT with no IN after it means they left for the day and
    is not counted as time out. */
-function dayStats(list, k, now = Date.now()) {
-  const st = { firstIn: null, leftAt: null, away: [], awayMin: 0, insideMin: 0, openIn: null, openOut: null };
+function dayStats(list) {
+  const st = { firstIn: null, leftAt: null, away: [], awayMin: 0, openIn: null, openOut: null };
   for (let i = 0; i < list.length; i++) {
     const a = list[i], b = list[i + 1];
     if (a.type === 'in' && st.firstIn == null) st.firstIn = a.ts;
@@ -158,11 +191,8 @@ function dayStats(list, k, now = Date.now()) {
     if (a.type === 'out') {
       if (b) { const min = (b.ts - a.ts) / 60000; st.away.push({ out: a, back: b, min }); st.awayMin += min; }
       else { st.openOut = a; st.leftAt = a.ts; }
-    } else if (b) {
-      st.insideMin += (b.ts - a.ts) / 60000;
-    } else {
+    } else if (!b) {
       st.openIn = a;
-      if (k === todayKey()) st.insideMin += (now - a.ts) / 60000;
     }
   }
   return st;
@@ -314,7 +344,7 @@ function empRow(e, st, list) {
   if (st.type === 'out') {
     sub = `<span class="timer" data-since="${p.ts}"></span> out since ${fmtTime(p.ts)}${p.reason ? `, <span class="reason ${colorClass(p.reason)}">${esc(p.reason)}</span>` : ''}`;
   } else if (st.type === 'in') {
-    const s = dayStats(list, todayKey());
+    const s = dayStats(list);
     sub = `In since ${fmtTime(p.ts)}${s.away.length ? `, out ${fmtMin(s.awayMin)} today` : ''}`;
   } else {
     sub = 'Not marked today';
@@ -338,7 +368,7 @@ function renderSheet() {
   if (!e) { panel.innerHTML = ''; return; }
   const list = todayIndex().get(e.id) || [];
   const st = statusFrom(list);
-  const stats = dayStats(list, todayKey());
+  const stats = dayStats(list);
   const p = st.punch;
   const selected = st.type === 'out' ? p.reason : S.pickReason;
 
@@ -394,7 +424,7 @@ function punchRow(p) {
 
 // A day's punches in order, with "Out for 25m" between an OUT and the IN that follows it.
 function timeline(list, k) {
-  const gaps = new Map(dayStats(list, k).away.map(a => [a.back.id, a.min]));
+  const gaps = new Map(dayStats(list).away.map(a => [a.back.id, a.min]));
   return list.map(p => (gaps.has(p.id) ? `<div class="gap">Out for ${fmtMin(gaps.get(p.id))}</div>` : '') + punchRow(p)).join('');
 }
 
@@ -419,7 +449,14 @@ function renderModal() {
             <label><input type="radio" name="type" value="out" ${d.type === 'out' ? 'checked' : ''} data-action="type-change"><span class="t-out">OUT</span></label>
           </div>
         </div>
-        <label class="field"><span>Date and time</span><input class="input" type="datetime-local" name="ts" value="${toLocalInput(d.ts)}" required></label>
+        <div class="field"><span>Date</span>
+          ${dateField('date', dayKey(d.ts))}
+          <div class="quick-days">
+            <button type="button" class="mini-btn" data-action="set-date" data-key="${todayKey()}">Today</button>
+            <button type="button" class="mini-btn" data-action="set-date" data-key="${shiftDay(todayKey(), -1)}">Yesterday</button>
+          </div>
+        </div>
+        <div class="field"><span>Time</span>${timeField(d.ts)}</div>
         <label class="field ${d.type === 'in' ? 'hidden' : ''}" id="reasonField"><span>Reason (optional)</span>
           <select class="input" name="reason"><option value="">No reason</option>${reasons.map(r => `<option ${r === d.reason ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select>
         </label>
@@ -463,7 +500,7 @@ async function submitPunch(form) {
   const m = S.modal;
   const fd = new FormData(form);
   const err = msg => { const el = $('#formError'); el.textContent = msg; el.classList.remove('hidden'); };
-  const ts = fromLocalInput(fd.get('ts'));
+  const ts = readDateTime(fd);
   const type = fd.get('type');
   if (!type) return err('Choose IN or OUT.');
   if (!ts) return err('Please enter the date and time.');
@@ -504,15 +541,15 @@ function reportData() {
   let totalAway = 0, totalOuts = 0;
   for (const [key, arr] of groupByEmpDay(list)) {
     const [empId, k] = key.split('|');
-    const st = dayStats(arr, k);
+    const st = dayStats(arr);
     let row = byEmp.get(empId);
     if (!row) {
       const emp = empById(empId) || { id: empId, name: 'Unknown', dept: '' };
-      row = { emp, days: [], awayMin: 0, outs: 0, insideMin: 0, noOut: 0, reasons: {} };
+      row = { emp, days: [], awayMin: 0, outs: 0, noOut: 0, reasons: {} };
       byEmp.set(empId, row);
     }
     row.days.push({ k, list: arr, st });
-    row.awayMin += st.awayMin; row.outs += st.away.length; row.insideMin += st.insideMin;
+    row.awayMin += st.awayMin; row.outs += st.away.length;
     if (st.openIn && k !== today) row.noOut++;
     for (const a of st.away) {
       const r = a.out.reason || NO_REASON;
@@ -538,8 +575,8 @@ function renderReports() {
     `<button class="chip ${S.report.range === k ? 'active' : ''}" data-action="range" data-range="${k}">${l}</button>`).join('')}</div>`;
   if (S.report.range === 'custom') {
     html += `<div class="card"><div class="date-pair">
-      <label class="field"><span>From</span><input class="input" type="date" data-change="rep-from" value="${d.from}"></label>
-      <label class="field"><span>To</span><input class="input" type="date" data-change="rep-to" value="${d.to}"></label>
+      <div class="field"><span>From</span>${dateField('from', d.from, { change: 'rep-from', short: true })}</div>
+      <div class="field"><span>To</span>${dateField('to', d.to, { change: 'rep-to', short: true })}</div>
     </div></div>`;
   }
   html += `<div class="card">
@@ -596,13 +633,14 @@ function buildWorkbook() {
   };
 
   // Summary
-  const head = ['Employee', 'Department', 'Days present', 'Times out', 'Time out (minutes)', 'Time out (h:mm)', 'Time inside (h:mm)', ...R.map(r => `${r} (minutes)`), 'Days without OUT'];
+  const hours = m => Math.round(m / 60 * 100) / 100;
+  const head = ['Employee', 'Department', 'Days present', 'Times out', 'Time out', 'Hours out', 'Minutes out', ...R.map(r => `${r} (minutes)`), 'Days without OUT'];
   const rows = d.rows.map(row => [
-    row.emp.name, row.emp.dept || '', row.days.length, row.outs, round(row.awayMin), fmtHM(row.awayMin), fmtHM(row.insideMin),
+    row.emp.name, row.emp.dept || '', row.days.length, row.outs, fmtMin(row.awayMin), hours(row.awayMin), round(row.awayMin),
     ...R.map(r => round(row.reasons[r]?.min || 0)), row.noOut,
   ]);
   const sum = i => rows.reduce((a, r) => a + (typeof r[i] === 'number' ? r[i] : 0), 0);
-  const totalRow = head.map((h, i) => (i === 0 ? 'TOTAL' : i === 1 ? '' : i === 5 ? fmtHM(d.totalAway) : i === 6 ? '' : sum(i)));
+  const totalRow = head.map((h, i) => (i === 0 ? 'TOTAL' : i === 1 ? '' : i === 4 ? fmtMin(d.totalAway) : i === 5 ? hours(d.totalAway) : sum(i)));
   const wsSum = XLSX.utils.aoa_to_sheet([[title], [`Exported ${fmtDate(Date.now())} at ${fmtTime(Date.now())}`], [], head, ...rows, totalRow]);
   wsSum['!cols'] = head.map((h, i) => ({ wch: i === 0 ? 24 : Math.max(12, h.length + 2) }));
   wsSum['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: Math.min(head.length - 1, 6) } }];
@@ -610,7 +648,7 @@ function buildWorkbook() {
   XLSX.utils.book_append_sheet(wb, wsSum, 'Summary');
 
   // Daily
-  const dHead = ['Date', 'Day', 'Employee', 'Department', 'First IN', 'Left at', 'Times out', 'Time out (minutes)', 'Time out (h:mm)', 'Time inside (h:mm)', 'Reasons'];
+  const dHead = ['Date', 'Day', 'Employee', 'Department', 'First IN', 'Left at', 'Times out', 'Time out', 'Minutes out', 'Reasons'];
   const daily = [];
   for (const row of d.rows) for (const { k, st } of row.days) daily.push({ k, row, st });
   daily.sort((a, b) => a.k.localeCompare(b.k) || byName(a.row.emp, b.row.emp));
@@ -619,12 +657,12 @@ function buildWorkbook() {
     st.away.forEach(a => { const r = a.out.reason || NO_REASON; reasons[r] = (reasons[r] || 0) + a.min; });
     return [
       fmtDate(keyToTs(k)), new Date(keyToTs(k)).toLocaleDateString('en-GB', { weekday: 'short' }), row.emp.name, row.emp.dept || '',
-      st.firstIn ? fmtTime(st.firstIn) : '', st.leftAt ? fmtTime(st.leftAt) : '', st.away.length, round(st.awayMin), fmtHM(st.awayMin), fmtHM(st.insideMin),
+      st.firstIn ? fmtTime(st.firstIn) : '', st.leftAt ? fmtTime(st.leftAt) : '', st.away.length, fmtMin(st.awayMin), round(st.awayMin),
       Object.entries(reasons).map(([r, m]) => `${r} ${fmtMin(m)}`).join(', '),
     ];
   });
   const wsDay = XLSX.utils.aoa_to_sheet([dHead, ...dRows]);
-  wsDay['!cols'] = [13, 6, 24, 16, 11, 11, 10, 12, 12, 13, 40].map(w => ({ wch: w }));
+  wsDay['!cols'] = [13, 6, 24, 16, 11, 11, 10, 11, 12, 40].map(w => ({ wch: w }));
   withFilter(wsDay, 0, dRows.length, dHead.length);
   XLSX.utils.book_append_sheet(wb, wsDay, 'Daily');
 
@@ -1032,6 +1070,15 @@ const actions = {
   },
   'edit-punch': el => openPunchEditor(el.dataset.pid),
   'new-punch': el => openPunchEditor(null, el.dataset.id),
+  'open-date': el => {
+    const input = el.querySelector('input[type=date]');
+    try { input.showPicker(); } catch { input.focus(); input.click(); }
+  },
+  'set-date': el => {
+    const input = el.closest('.field').querySelector('input[type=date]');
+    input.value = el.dataset.key;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  },
   'type-change': el => { $('#reasonField').classList.toggle('hidden', el.value === 'in'); },
   'delete-punch': async () => {
     const p = S.punches.find(x => x.id === S.modal.id);
@@ -1092,8 +1139,11 @@ document.addEventListener('change', async e => {
   if (t.id === 'restoreInput' && t.files[0]) { await restoreFile(t.files[0]); t.value = ''; return; }
   if (t.id === 'importInput' && t.files[0]) { await importEmployees(t.files[0]); t.value = ''; return; }
   switch (t.dataset.change) {
-    case 'rep-from': S.report.from = t.value; renderReports(); break;
-    case 'rep-to': S.report.to = t.value; renderReports(); break;
+    case 'date-label':
+      if (t.value) t.closest('.date-btn').querySelector('.date-text').textContent = fmtDateFull(keyToTs(t.value));
+      break;
+    case 'rep-from': S.report.from = t.value || S.report.from; renderReports(); break;
+    case 'rep-to': S.report.to = t.value || S.report.to; renderReports(); break;
     case 'keep-awake': S.settings.keepAwake = t.checked; await saveSettings(); applyWakeLock(); break;
   }
 });
