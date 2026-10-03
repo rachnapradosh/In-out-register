@@ -48,26 +48,36 @@ The badge at the top right shows the backup state: **Backed up**, **3 waiting** 
 
 ## Using it
 
-- **Home:** each person has an **IN** and an **OUT** button. Tap one and the time is recorded. The one that doesn't apply is greyed out.
-- Tap a **name** to see that person's day, choose a reason before tapping OUT, change the reason of the current OUT, or edit and add entries.
-- **Reports:** choose a period, then tap **Download Excel** or **Share Excel**.
+**Every morning (one tap):** the card at the top of Home shows who is Present, on Half day, Absent or not marked yet.
+- Tap **Mark everyone present** to mark all remaining staff present, with IN at the opening time (10:00 AM).
+- Or, on each person's row, tap **Present** or **Absent**.
+- Tap a **name** to choose **Half day**, or to set a different arrival time (for example 10:40 AM) before tapping Present.
+
+**During the day:** each person who is present has an **OUT** and an **IN** button. Tap one and the time is recorded. You can choose a reason before tapping OUT (optional).
+
+**At closing time you do nothing.** If someone went OUT and never came back, their time out is counted until closing (7:00 PM).
+
+**Reports:** choose a period, then tap **Download Excel** or **Share Excel**.
 
 ### How the numbers are worked out
-- **Time out** = from each OUT to the IN that follows it. This is the number to use for salary cuts.
-- A final OUT with no IN after it means the person left for the day. It is shown as "Left at" and is **not** counted as time out.
-- **Days without OUT** flags past days where the last entry was IN, meaning someone probably forgot to mark them out.
+- **Time out** = from each OUT to the IN that follows it, cut off at closing time.
+- **No IN after an OUT** (for example OUT at 4:45 PM): counted until closing, so **2h 15m**.
+- **Half day:** leaving early is **not** counted as time out; the day is counted as a half day instead.
+- **Late arrival** is just recorded as the IN time and is not counted as time out.
+- **Absent** days are counted separately, and absent staff have no IN or OUT.
+- Opening and closing times can be changed in **Settings > Office hours**.
 
 ## The Google Sheet
 
 | Tab | What it shows |
 |---|---|
-| **Dashboard** | A month picker (change it and every number updates), totals, a summary for each employee, a chart of hours out, and who is out right now |
-| **Daily** | One row per employee per day: first IN, left at, times out, time out, reasons |
-| **Time Out** | Every OUT and the IN that followed it, with the duration and reason |
+| **Dashboard** | A month picker (change it and every number updates), totals, a summary for each employee (present, half days, absent, time out), a chart of hours out, and who is out right now |
+| **Daily** | One row per employee per day: attendance (Present, Half day or Absent), first IN, last OUT, times out, time out, reasons |
+| **Time Out** | Every OUT and when they came back (or closing time), with the duration and reason |
 | **Punch Log** | Every single IN and OUT, newest first |
 | **Employees** | The employee list |
 
-The visible tabs are rebuilt after every backup, so **don't type in them**, because your changes would be overwritten. The raw data is in two hidden tabs (`_punches`, `_employees`). To restyle the sheet by hand, open Apps Script, choose `rebuildAll` and click **Run**.
+The visible tabs are rebuilt after every backup, so **don't type in them**, because your changes would be overwritten. The raw data is in hidden tabs (`_punches`, `_employees`, `_attendance`). To restyle the sheet by hand, open Apps Script, choose `rebuildAll` and click **Run**.
 
 ## New phone or reset phone
 

@@ -2,13 +2,15 @@
 
 /* ============================================================
    In-Out Register
-   One tap records when an employee comes IN or goes OUT, using
-   this phone's clock. A reason for going out is optional.
+   Each morning an employee is marked Present (IN at opening time),
+   Half day or Absent. After that one tap records OUT and IN using
+   this phone's clock; a reason for going out is optional. An OUT
+   with no IN after it counts as time out until closing time.
    Data lives on this phone (IndexedDB) and is backed up to a
    Google Sheet when one is connected.
    ============================================================ */
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 const COLOR_COUNT = 6;
 const NO_REASON = 'No reason';
 const DEFAULT_SETTINGS = {
@@ -17,11 +19,15 @@ const DEFAULT_SETTINGS = {
   secret: '',
   keepAwake: false,
   lastSync: 0,
+  openMin: 10 * 60,   // office opens 10:00 AM (minutes after midnight)
+  closeMin: 19 * 60,  // office closes 7:00 PM
 };
+const STATUS_LABEL = { present: 'Present', half: 'Half day', absent: 'Absent' };
 
 const S = {
   employees: [],
   punches: [],
+  days: [],      // attendance: one record per employee per day
   settings: structuredClone(DEFAULT_SETTINGS),
   view: 'home',
   search: '',
@@ -40,12 +46,13 @@ const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('inout-register', 1);
+      const req = indexedDB.open('inout-register', 2);
       req.onupgradeneeded = () => {
         const d = req.result;
-        d.createObjectStore('employees', { keyPath: 'id' });
-        d.createObjectStore('punches', { keyPath: 'id' });
-        d.createObjectStore('meta', { keyPath: 'key' });
+        for (const name of ['employees', 'punches', 'days']) {
+          if (!d.objectStoreNames.contains(name)) d.createObjectStore(name, { keyPath: 'id' });
+        }
+        if (!d.objectStoreNames.contains('meta')) d.createObjectStore('meta', { keyPath: 'key' });
       };
       req.onsuccess = () => { this.db = req.result; resolve(); };
       req.onerror = () => reject(req.error);
@@ -102,27 +109,30 @@ function dateField(name, key, opts = {}) {
     <input type="date" name="${name}" value="${key}" max="${todayKey()}" ${change} required tabindex="-1">
   </div>`;
 }
-function timeField(ts) {
+function timeField(ts, prefix = '') {
   const d = new Date(ts);
   const h = d.getHours() % 12 || 12, m = d.getMinutes(), pm = d.getHours() >= 12;
   const opt = (v, label, sel) => `<option value="${v}" ${sel ? 'selected' : ''}>${label}</option>`;
   return `<div class="time-pick">
-    <select class="input" name="hh" aria-label="Hour">${Array.from({ length: 12 }, (_, i) => opt(i + 1, i + 1, i + 1 === h)).join('')}</select>
+    <select class="input" name="${prefix}hh" aria-label="Hour">${Array.from({ length: 12 }, (_, i) => opt(i + 1, i + 1, i + 1 === h)).join('')}</select>
     <span class="colon">:</span>
-    <select class="input" name="mm" aria-label="Minute">${Array.from({ length: 60 }, (_, i) => opt(i, pad(i), i === m)).join('')}</select>
+    <select class="input" name="${prefix}mm" aria-label="Minute">${Array.from({ length: 60 }, (_, i) => opt(i, pad(i), i === m)).join('')}</select>
     <div class="ampm">
-      <label><input type="radio" name="ap" value="AM" ${pm ? '' : 'checked'}><span>AM</span></label>
-      <label><input type="radio" name="ap" value="PM" ${pm ? 'checked' : ''}><span>PM</span></label>
+      <label><input type="radio" name="${prefix}ap" value="AM" ${pm ? '' : 'checked'}><span>AM</span></label>
+      <label><input type="radio" name="${prefix}ap" value="PM" ${pm ? 'checked' : ''}><span>PM</span></label>
     </div>
   </div>`;
 }
+// Minutes after midnight from a timeField.
+const readTime = (fd, prefix = '') =>
+  ((Number(fd.get(prefix + 'hh')) % 12) + (fd.get(prefix + 'ap') === 'PM' ? 12 : 0)) * 60 + Number(fd.get(prefix + 'mm'));
 function readDateTime(fd) {
   const key = String(fd.get('date') || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return null;
-  const [y, mo, d] = key.split('-').map(Number);
-  const h = (Number(fd.get('hh')) % 12) + (fd.get('ap') === 'PM' ? 12 : 0);
-  return new Date(y, mo - 1, d, h, Number(fd.get('mm'))).getTime();
+  return minToTs(key, readTime(fd));
 }
+const minToTs = (k, min) => { const [y, mo, d] = k.split('-').map(Number); return new Date(y, mo - 1, d, Math.floor(min / 60), min % 60).getTime(); };
+const fmtClock = min => fmtTime(minToTs(todayKey(), min));
 function shiftDay(key, days) {
   const d = new Date(keyToTs(key)); d.setDate(d.getDate() + days); return dayKey(d.getTime());
 }
@@ -172,25 +182,51 @@ function groupByEmpDay(list) {
   return sortLists(m);
 }
 
-function statusFrom(list) {
-  const last = list && list[list.length - 1];
-  return last ? { type: last.type, punch: last } : { type: 'none', punch: null };
+// Attendance records keyed "empId|yyyy-mm-dd".
+function daysIndex() {
+  const m = new Map();
+  for (const r of S.days) if (!r.deleted) m.set(r.id, r);
+  return m;
 }
-const statusOf = empId => statusFrom(todayIndex().get(empId));
+const dayRec = (empId, k) => S.days.find(r => r.id === `${empId}|${k}` && !r.deleted);
+// Present / half day / absent for a day; a day with entries but no record counts as present.
+const attOf = (rec, list) => rec ? rec.status : list && list.length ? 'present' : null;
+
+/* Where an employee is right now:
+   type: 'in' | 'out' | 'none' (not marked yet) | 'absent'
+   att:  'present' | 'half' | 'absent' | null */
+function statusFrom(list, rec) {
+  const att = attOf(rec, list);
+  if (att === 'absent') return { type: 'absent', punch: null, att };
+  const last = list && list[list.length - 1];
+  return last ? { type: last.type, punch: last, att } : { type: 'none', punch: null, att };
+}
+const statusOf = empId => statusFrom(todayIndex().get(empId), dayRec(empId, todayKey()));
 
 /* Works out one employee's day from their punches (oldest first).
-   OUT followed by IN = time out of the office.
-   A final OUT with no IN after it means they left for the day and
-   is not counted as time out. */
-function dayStats(list) {
-  const st = { firstIn: null, leftAt: null, away: [], awayMin: 0, openIn: null, openOut: null };
+   OUT followed by IN = time out of the office, cut off at closing time.
+   A final OUT with no IN after it counts until closing time (until now
+   if the office is still open), because nobody marks IN after closing.
+   On a half day the final OUT is not counted: they are on half-day leave. */
+function dayStats(list, k, att) {
+  const close = minToTs(k, S.settings.closeMin);
+  const st = { firstIn: null, leftAt: null, away: [], awayMin: 0, openIn: null, openOut: null, close };
+  const add = (out, back, until) => {
+    const min = Math.max(0, (Math.min(until, close) - out.ts) / 60000);
+    if (!back && min <= 0) return;
+    st.away.push({ out, back, min, toClose: !back });
+    st.awayMin += min;
+  };
   for (let i = 0; i < list.length; i++) {
     const a = list[i], b = list[i + 1];
     if (a.type === 'in' && st.firstIn == null) st.firstIn = a.ts;
     if (b && a.type === b.type) continue; // repeated punch: the later one counts
     if (a.type === 'out') {
-      if (b) { const min = (b.ts - a.ts) / 60000; st.away.push({ out: a, back: b, min }); st.awayMin += min; }
-      else { st.openOut = a; st.leftAt = a.ts; }
+      if (b) add(a, b, b.ts);
+      else {
+        st.openOut = a; st.leftAt = a.ts;
+        if (att !== 'half') add(a, null, k === todayKey() ? Math.min(Date.now(), close) : close);
+      }
     } else if (!b) {
       st.openIn = a;
     }
@@ -212,14 +248,79 @@ async function saveEmployee(e) {
   await DB.put('employees', [e]);
   queueSync();
 }
+async function saveDay(rec) {
+  rec.updatedAt = Date.now();
+  rec.dirty = true;
+  if (!S.days.includes(rec)) S.days.push(rec);
+  await DB.put('days', [rec]);
+  queueSync();
+}
 async function saveSettings() {
   await DB.put('meta', [{ key: 'settings', value: S.settings }]);
+}
+
+/* ---------- Attendance ---------- */
+/* Marks today's attendance. Present and half day also record IN at
+   inMin (default: opening time) when there is no entry yet today,
+   unless addIn is false. Absent removes today's entries.
+   Returns a function that undoes it. */
+async function setAttendance(empId, status, inMin = S.settings.openMin, addIn = true) {
+  const k = todayKey(), id = `${empId}|${k}`;
+  const list = todayIndex().get(empId) || [];
+  let rec = S.days.find(r => r.id === id);
+  const prev = rec ? { status: rec.status, deleted: !!rec.deleted } : null;
+  const removed = status === 'absent' ? list : [];
+  for (const p of removed) { p.deleted = true; await savePunch(p); }
+  if (!rec) rec = { id, empId, date: k, status, deleted: false };
+  Object.assign(rec, { status, deleted: false });
+  await saveDay(rec);
+  let added = null;
+  if (addIn && status !== 'absent' && !list.length) {
+    added = { id: uid(), empId, type: 'in', ts: minToTs(k, inMin), reason: '', note: '', deleted: false };
+    await savePunch(added);
+  }
+  return async () => {
+    if (prev) Object.assign(rec, prev); else rec.deleted = true;
+    await saveDay(rec);
+    if (added) { added.deleted = true; await savePunch(added); }
+    for (const p of removed) { p.deleted = false; await savePunch(p); }
+  };
+}
+
+async function markAttendance(empId, status, inMin) {
+  const list = todayIndex().get(empId) || [];
+  if (status === 'absent' && list.length &&
+      !confirm(`Mark ${empName(empId)} absent? Today's ${plural(list.length, 'entry', 'entries')} will be removed.`)) return;
+  const undo = await setAttendance(empId, status, inMin ?? S.settings.openMin);
+  buzz();
+  if (S.overlays.includes('sheet') && status === 'absent') closeOverlay();
+  render();
+  const st = statusOf(empId);
+  let msg = `${empName(empId)}: ${STATUS_LABEL[status]}`;
+  if (status !== 'absent' && st.punch && st.punch.type === 'in') msg += `, IN ${fmtTime(st.punch.ts)}`;
+  toast(msg, async () => { await undo(); render(); });
+}
+
+async function markAllPresent() {
+  const k = todayKey();
+  const idx = todayIndex();
+  const todo = activeEmps().filter(e => !dayRec(e.id, k) && !(idx.get(e.id) || []).length);
+  if (!todo.length) return;
+  if (!confirm(`Mark ${plural(todo.length, 'employee')} present with IN at ${fmtClock(S.settings.openMin)}?`)) return;
+  const undos = [];
+  for (const e of todo) undos.push(await setAttendance(e.id, 'present'));
+  buzz();
+  render();
+  toast(`${plural(todo.length, 'employee')} marked present`, async () => { for (const u of undos) await u(); render(); });
 }
 
 /* ---------- Core action ---------- */
 async function punch(empId, type, reason = '') {
   const cur = statusOf(empId);
   if (cur.type === type) { toast(`${empName(empId)} is already ${typeLabel(type)}`); return; }
+  if (cur.type === 'absent') { toast(`${empName(empId)} is marked absent today`); return; }
+  // An IN or OUT on an unmarked day means they came to work.
+  const undoAtt = cur.att ? null : await setAttendance(empId, 'present', 0, false);
   const p = { id: uid(), empId, type, ts: Date.now(), reason: type === 'out' ? reason : '', note: '', deleted: false };
   await savePunch(p);
   buzz();
@@ -229,7 +330,7 @@ async function punch(empId, type, reason = '') {
   let msg = `${empName(empId)} ${typeLabel(type)} at ${fmtTime(p.ts)}`;
   if (type === 'in' && cur.type === 'out') msg += `, was out ${fmtMin((p.ts - cur.punch.ts) / 60000)}`;
   if (type === 'out' && reason) msg += ` for ${reason}`;
-  toast(msg, async () => { p.deleted = true; await savePunch(p); render(); });
+  toast(msg, async () => { p.deleted = true; await savePunch(p); if (undoAtt) await undoAtt(); render(); });
 }
 
 /* ---------- Overlays (with Android back-button support) ---------- */
@@ -298,32 +399,47 @@ function renderHomeBody() {
   if (!emps.length) {
     body.innerHTML = `<div class="card empty">
       <h3>No employees yet</h3>
-      <p>Add your employees once. After that, one tap on IN or OUT records the time.</p>
+      <p>Add your employees once. Each morning mark them present, then one tap on OUT or IN records the time.</p>
       <button class="btn" data-action="nav" data-view="employees">Add employees</button>
     </div>`;
     return;
   }
+  const k = todayKey();
   const idx = todayIndex();
-  const status = new Map(emps.map(e => [e.id, statusFrom(idx.get(e.id))]));
-  const count = { in: 0, out: 0, none: 0 };
-  emps.forEach(e => count[status.get(e.id).type]++);
+  const recs = daysIndex();
+  const status = new Map(emps.map(e => [e.id, statusFrom(idx.get(e.id), recs.get(`${e.id}|${k}`))]));
+  const count = { in: 0, out: 0, none: 0, absent: 0 };
+  const att = { present: 0, half: 0, absent: 0, none: 0 };
+  emps.forEach(e => { const st = status.get(e.id); count[st.type]++; att[st.att || 'none']++; });
 
   const q = S.search.trim().toLowerCase();
   const match = e => !q || e.name.toLowerCase().includes(q) || (e.dept || '').toLowerCase().includes(q);
-  const groups = { out: [], in: [], none: [] };
+  const groups = { none: [], out: [], in: [], absent: [] };
   emps.filter(match).forEach(e => groups[status.get(e.id).type].push(e));
   groups.out.sort((a, b) => status.get(a.id).punch.ts - status.get(b.id).punch.ts);
 
+  let html = `<div class="card att-card">
+    <div class="att-head"><span>Today's attendance</span><span class="small muted">Office ${fmtClock(S.settings.openMin)} to ${fmtClock(S.settings.closeMin)}</span></div>
+    <div class="att-counts">
+      <div class="a-present"><b>${att.present}</b><span>Present</span></div>
+      <div class="a-half"><b>${att.half}</b><span>Half day</span></div>
+      <div class="a-absent"><b>${att.absent}</b><span>Absent</span></div>
+      <div class="a-none"><b>${att.none}</b><span>Not marked</span></div>
+    </div>
+    ${att.none ? `<button class="btn block" data-action="all-present">Mark ${att.none === emps.length ? 'everyone' : `the other ${att.none}`} present, IN ${fmtClock(S.settings.openMin)}</button>` : ''}
+  </div>`;
+
   const chip = (key, label, n) =>
     `<button class="chip chip-${key} ${S.filter === key ? 'active' : ''}" data-action="filter" data-filter="${key}"><span class="dot"></span>${label} <b>${n}</b></button>`;
-  let html = `<div class="chips">
+  html += `<div class="chips">
     ${chip('all', 'All', emps.length)}
     ${chip('in', 'In', count.in)}
     ${chip('out', 'Out', count.out)}
     ${chip('none', 'Not marked', count.none)}
+    ${chip('absent', 'Absent', count.absent)}
   </div>`;
 
-  const sections = [['out', 'Out now'], ['in', 'In office'], ['none', 'Not marked today']];
+  const sections = [['none', 'Not marked today'], ['out', 'Out now'], ['in', 'In office'], ['absent', 'Absent today']];
   let shown = 0;
   for (const [key, title] of sections) {
     if (S.filter !== 'all' && S.filter !== key) continue;
@@ -340,24 +456,33 @@ function renderHomeBody() {
 
 function empRow(e, st, list) {
   const p = st.punch;
-  let sub;
+  const half = st.att === 'half' ? '<span class="att-tag half">Half day</span> ' : '';
+  let sub, right;
   if (st.type === 'out') {
-    sub = `<span class="timer" data-since="${p.ts}"></span> out since ${fmtTime(p.ts)}${p.reason ? `, <span class="reason ${colorClass(p.reason)}">${esc(p.reason)}</span>` : ''}`;
+    sub = `${half}<span class="timer" data-since="${p.ts}"></span> out since ${fmtTime(p.ts)}${p.reason ? `, <span class="reason ${colorClass(p.reason)}">${esc(p.reason)}</span>` : ''}`;
   } else if (st.type === 'in') {
-    const s = dayStats(list);
-    sub = `In since ${fmtTime(p.ts)}${s.away.length ? `, out ${fmtMin(s.awayMin)} today` : ''}`;
+    const s = dayStats(list, todayKey(), st.att);
+    sub = `${half}In since ${fmtTime(p.ts)}${s.away.length ? `, out ${fmtMin(s.awayMin)} today` : ''}`;
+  } else if (st.type === 'absent') {
+    sub = 'Absent today';
   } else {
     sub = 'Not marked today';
+  }
+  if (st.type === 'none') {
+    right = `<button class="pbtn present" data-action="mark" data-status="present" data-id="${e.id}">Present</button>
+      <button class="pbtn absent" data-action="mark" data-status="absent" data-id="${e.id}">Absent</button>`;
+  } else if (st.type === 'absent') {
+    right = `<button class="pbtn change" data-action="open-emp" data-id="${e.id}">Change</button>`;
+  } else {
+    right = `<button class="pbtn in" data-action="punch" data-type="in" data-id="${e.id}" ${st.type === 'in' ? 'disabled' : ''}>IN</button>
+      <button class="pbtn out" data-action="punch" data-type="out" data-id="${e.id}" ${st.type === 'out' ? 'disabled' : ''}>OUT</button>`;
   }
   return `<div class="row st-${st.type}">
     <button class="row-main" data-action="open-emp" data-id="${e.id}">
       <span class="avatar">${esc(initials(e.name))}</span>
       <span class="row-text"><span class="name">${esc(e.name)}</span><span class="sub">${sub}</span></span>
     </button>
-    <div class="punch-pair">
-      <button class="pbtn in" data-action="punch" data-type="in" data-id="${e.id}" ${st.type === 'in' ? 'disabled' : ''}>IN</button>
-      <button class="pbtn out" data-action="punch" data-type="out" data-id="${e.id}" ${st.type === 'out' ? 'disabled' : ''}>OUT</button>
-    </div>
+    <div class="punch-pair">${right}</div>
   </div>`;
 }
 
@@ -366,39 +491,59 @@ function renderSheet() {
   const e = empById(S.sheetEmp);
   const panel = $('#sheetPanel');
   if (!e) { panel.innerHTML = ''; return; }
+  const k = todayKey();
   const list = todayIndex().get(e.id) || [];
-  const st = statusFrom(list);
-  const stats = dayStats(list);
-  const p = st.punch;
-  const selected = st.type === 'out' ? p.reason : S.pickReason;
-
-  let box;
-  if (st.type === 'out') {
-    box = `<div class="status-box out">
-      <div class="label">Out since ${fmtTime(p.ts)}${p.reason ? ` for ${esc(p.reason)}` : ''}</div>
-      <span class="timer" data-since="${p.ts}"></span></div>`;
-  } else if (st.type === 'in') {
-    box = `<div class="status-box in">
-      <div class="label">In since ${fmtTime(p.ts)}</div>
-      <span class="timer" data-since="${p.ts}"></span></div>`;
-  } else {
-    box = '<div class="status-box none"><div class="label">Not marked today</div></div>';
-  }
-
-  const reasonChips = S.settings.reasons.map(r =>
-    `<button class="rchip ${colorClass(r)} ${selected === r ? 'active' : ''}" data-action="set-reason" data-reason="${esc(r)}"><span class="dot"></span>${esc(r)}</button>`).join('');
-
-  panel.innerHTML = `
+  const st = statusFrom(list, dayRec(e.id, k));
+  const head = `
     <div class="grabber"></div>
     <div class="sheet-head">
       <span class="avatar">${esc(initials(e.name))}</span>
       <div><h2>${esc(e.name)}</h2><div class="small muted">${esc(e.dept || '')}</div></div>
       <button class="icon-btn" data-action="close" aria-label="Close">${ICON.close}</button>
-    </div>
+    </div>`;
+
+  // Not marked yet, or absent: choose attendance first.
+  if (st.type === 'none' || st.type === 'absent') {
+    const absent = st.type === 'absent';
+    panel.innerHTML = `${head}
+      <div class="status-box ${absent ? 'absent' : 'none'}"><div class="label">${absent ? 'Absent today' : 'Not marked today'}</div></div>
+      <form data-form="attend">
+        <div class="field"><span>Came in at</span>${timeField(minToTs(k, S.settings.openMin), 'a')}</div>
+        <div class="att-choices">
+          <button type="submit" class="big in" value="present">Present<small>IN at the time above</small></button>
+          <button type="submit" class="big half" value="half">Half day<small>Leaving early is not counted</small></button>
+        </div>
+        ${absent ? '' : '<button type="submit" class="btn danger block" value="absent" style="margin-top:10px">Absent today</button>'}
+      </form>
+      ${absent ? '' : `<p class="small muted" style="margin-top:12px">Present records IN at ${fmtClock(S.settings.openMin)} unless you change the time. Anyone who goes OUT and does not come back is counted as out until ${fmtClock(S.settings.closeMin)}.</p>`}`;
+    return;
+  }
+
+  const stats = dayStats(list, k, st.att);
+  const p = st.punch;
+  const selected = st.type === 'out' ? p.reason : S.pickReason;
+  let box;
+  if (st.type === 'out') {
+    box = `<div class="status-box out">
+      <div class="label">Out since ${fmtTime(p.ts)}${p.reason ? ` for ${esc(p.reason)}` : ''}</div>
+      <span class="timer" data-since="${p.ts}"></span>
+      ${st.att === 'half' ? '' : `<div class="small">Counted until ${fmtClock(S.settings.closeMin)} if not back</div>`}</div>`;
+  } else {
+    box = `<div class="status-box in">
+      <div class="label">In since ${fmtTime(p.ts)}</div>
+      <span class="timer" data-since="${p.ts}"></span></div>`;
+  }
+  const reasonChips = S.settings.reasons.map(r =>
+    `<button class="rchip ${colorClass(r)} ${selected === r ? 'active' : ''}" data-action="set-reason" data-reason="${esc(r)}"><span class="dot"></span>${esc(r)}</button>`).join('');
+  const attBtn = (value, label) =>
+    `<button class="${st.att === value ? 'active' : ''}" data-action="set-att" data-status="${value}" data-id="${e.id}">${label}</button>`;
+
+  panel.innerHTML = `${head}
+    <div class="att-switch">${attBtn('present', 'Present')}${attBtn('half', 'Half day')}${attBtn('absent', 'Absent')}</div>
     ${box}
     <div class="big-pair">
-      <button class="big in" data-action="punch" data-type="in" data-id="${e.id}" ${st.type === 'in' ? 'disabled' : ''}>IN<small>${st.type === 'in' ? 'Already in' : 'Record time now'}</small></button>
-      <button class="big out" data-action="punch" data-type="out" data-id="${e.id}" data-reason="${esc(S.pickReason)}" ${st.type === 'out' ? 'disabled' : ''}>OUT<small>${st.type === 'out' ? 'Already out' : S.pickReason ? esc(S.pickReason) : 'Record time now'}</small></button>
+      <button class="big in" data-action="punch" data-type="in" data-id="${e.id}" ${st.type === 'in' ? 'disabled' : ''}>IN<small>${st.type === 'in' ? 'Already in' : 'Back in office'}</small></button>
+      <button class="big out" data-action="punch" data-type="out" data-id="${e.id}" data-reason="${esc(S.pickReason)}" ${st.type === 'out' ? 'disabled' : ''}>OUT<small>${st.type === 'out' ? 'Already out' : S.pickReason ? esc(S.pickReason) : 'Going out now'}</small></button>
     </div>
     ${S.settings.reasons.length ? `<div class="reason-block">
       <div class="small muted">${st.type === 'out' ? 'Reason for this OUT (optional, tap to change)' : 'Reason for going out (optional, choose before OUT)'}</div>
@@ -410,7 +555,7 @@ function renderSheet() {
       <div class="stat"><div class="v">${stats.away.length}</div><div class="k">Times out</div></div>
     </div>
     <div class="section-title" style="margin-top:14px"><span>Today</span><span>${plural(list.length, 'entry', 'entries')}</span></div>
-    ${list.length ? `<div class="entries">${timeline(list, todayKey())}</div>` : '<div class="muted small" style="padding:6px 2px">No entries today.</div>'}
+    ${list.length ? `<div class="entries">${timeline(list, k, st.att)}</div>` : '<div class="muted small" style="padding:6px 2px">No entries today.</div>'}
     <button class="btn ghost block" style="margin-top:14px" data-action="new-punch" data-id="${e.id}">Add a missed entry</button>`;
 }
 
@@ -422,10 +567,21 @@ function punchRow(p) {
   </div>`;
 }
 
-// A day's punches in order, with "Out for 25m" between an OUT and the IN that follows it.
-function timeline(list, k) {
-  const gaps = new Map(dayStats(list).away.map(a => [a.back.id, a.min]));
-  return list.map(p => (gaps.has(p.id) ? `<div class="gap">Out for ${fmtMin(gaps.get(p.id))}</div>` : '') + punchRow(p)).join('');
+// A day's punches in order, with "Out for 25m" between an OUT and the IN that follows it,
+// and the time counted until closing after a final OUT.
+function timeline(list, k, att) {
+  const st = dayStats(list, k, att);
+  const gaps = new Map(st.away.filter(a => a.back).map(a => [a.back.id, a.min]));
+  let html = list.map(p => (gaps.has(p.id) ? `<div class="gap">Out for ${fmtMin(gaps.get(p.id))}</div>` : '') + punchRow(p)).join('');
+  const tail = st.away.find(a => !a.back);
+  if (tail) {
+    html += Date.now() < st.close && k === todayKey()
+      ? `<div class="gap">Out for ${fmtMin(tail.min)} so far</div>`
+      : `<div class="gap">Not back before closing, counted until ${fmtClock(S.settings.closeMin)}: ${fmtMin(tail.min)}</div>`;
+  } else if (st.openOut && att === 'half') {
+    html += '<div class="gap muted-gap">Left for the half day, not counted</div>';
+  }
+  return html;
 }
 
 /* ---------- Modal (edit entry / edit employee) ---------- */
@@ -534,23 +690,32 @@ const rangeLabel = (f, t) => (f === t ? fmtLongDate(keyToTs(f)) : `${fmtDate(key
 
 function reportData() {
   const [from, to] = rangeKeys();
-  const today = todayKey();
-  const list = live().filter(p => { const k = dayKey(p.ts); return k >= from && k <= to; }).sort((a, b) => a.ts - b.ts);
+  const inRange = k => k >= from && k <= to;
+  const list = live().filter(p => inRange(dayKey(p.ts))).sort((a, b) => a.ts - b.ts);
+  const groups = groupByEmpDay(list);
+  // Days marked absent (or present / half day) with no entries still belong in the report.
+  const recs = new Map();
+  for (const r of S.days) if (!r.deleted && inRange(r.date)) {
+    recs.set(r.id, r);
+    if (!groups.has(r.id)) groups.set(r.id, []);
+  }
   const reasonNames = [...S.settings.reasons];
   const byEmp = new Map();
-  let totalAway = 0, totalOuts = 0;
-  for (const [key, arr] of groupByEmpDay(list)) {
+  let totalAway = 0, totalOuts = 0, totalAbsent = 0;
+  for (const [key, arr] of groups) {
     const [empId, k] = key.split('|');
-    const st = dayStats(arr);
+    const att = attOf(recs.get(key), arr);
+    if (!att) continue;
+    const st = dayStats(arr, k, att);
     let row = byEmp.get(empId);
     if (!row) {
       const emp = empById(empId) || { id: empId, name: 'Unknown', dept: '' };
-      row = { emp, days: [], awayMin: 0, outs: 0, noOut: 0, reasons: {} };
+      row = { emp, days: [], awayMin: 0, outs: 0, present: 0, half: 0, absent: 0, reasons: {} };
       byEmp.set(empId, row);
     }
-    row.days.push({ k, list: arr, st });
+    row.days.push({ k, list: arr, st, att });
+    row[att]++;
     row.awayMin += st.awayMin; row.outs += st.away.length;
-    if (st.openIn && k !== today) row.noOut++;
     for (const a of st.away) {
       const r = a.out.reason || NO_REASON;
       if (!reasonNames.includes(r)) reasonNames.push(r);
@@ -558,13 +723,14 @@ function reportData() {
       x.count++; x.min += a.min;
     }
     totalAway += st.awayMin; totalOuts += st.away.length;
+    if (att === 'absent') totalAbsent++;
   }
   const rows = [...byEmp.values()].sort((a, b) => b.awayMin - a.awayMin || byName(a.emp, b.emp));
   rows.forEach(r => r.days.sort((a, b) => a.k.localeCompare(b.k)));
   // Keep "No reason" last.
   const nr = reasonNames.indexOf(NO_REASON);
   if (nr >= 0) { reasonNames.splice(nr, 1); reasonNames.push(NO_REASON); }
-  return { from, to, list, rows, totalAway, totalOuts, reasonNames };
+  return { from, to, list, rows, totalAway, totalOuts, totalAbsent, reasonNames };
 }
 
 function renderReports() {
@@ -584,11 +750,11 @@ function renderReports() {
     <div class="kpis">
       <div><div class="kpi-v">${fmtMin(d.totalAway)}</div><div class="small muted">Total time out</div></div>
       <div><div class="kpi-v">${d.totalOuts}</div><div class="small muted">Times out</div></div>
-      <div><div class="kpi-v">${d.rows.length}</div><div class="small muted">Employees</div></div>
+      <div><div class="kpi-v">${d.totalAbsent}</div><div class="small muted">Absent days</div></div>
     </div>
     <div class="btn-row" style="margin-top:14px">
-      <button class="btn" data-action="excel" ${d.list.length ? '' : 'disabled'}>Download Excel</button>
-      ${canShare ? `<button class="btn secondary" data-action="share-excel" ${d.list.length ? '' : 'disabled'}>Share Excel</button>` : ''}
+      <button class="btn" data-action="excel" ${d.rows.length ? '' : 'disabled'}>Download Excel</button>
+      ${canShare ? `<button class="btn secondary" data-action="share-excel" ${d.rows.length ? '' : 'disabled'}>Share Excel</button>` : ''}
     </div>
   </div>`;
 
@@ -597,21 +763,23 @@ function renderReports() {
   } else {
     html += '<div class="list">' + d.rows.map(row => {
       const open = S.report.open === row.emp.id;
-      const pills = d.reasonNames.filter(r => row.reasons[r]).map(r =>
+      const attPills = [['present', 'Present'], ['half', 'Half day'], ['absent', 'Absent']]
+        .filter(([key]) => row[key]).map(([key, label]) => `<span class="att-tag ${key}">${label} ${row[key]}</span>`).join('');
+      const pills = attPills + d.reasonNames.filter(r => row.reasons[r]).map(r =>
         `<span class="pill ${colorClass(r)}"><span class="dot"></span>${esc(r)} ${row.reasons[r].count}x, ${fmtMin(row.reasons[r].min)}</span>`).join('');
       let body = '';
       if (open) {
-        body = '<div class="rep-body">' + row.days.map(({ k, list, st }) => `
+        body = '<div class="rep-body">' + row.days.map(({ k, list, st, att }) => `
           <div class="day-head">
-            <span class="day-label">${fmtDay(keyToTs(k))}</span>
-            <span class="small muted">${st.firstIn ? `IN ${fmtTime(st.firstIn)}` : 'No IN'}${st.leftAt ? `, left ${fmtTime(st.leftAt)}` : ''}, out ${fmtMin(st.awayMin)}</span>
-          </div>${timeline(list, k)}`).join('') + '</div>';
+            <span class="day-label">${fmtDay(keyToTs(k))} <span class="att-tag ${att}">${STATUS_LABEL[att]}</span></span>
+            <span class="small muted">${att === 'absent' ? '' : `${st.firstIn ? `IN ${fmtTime(st.firstIn)}` : 'No IN'}, out ${fmtMin(st.awayMin)}`}</span>
+          </div>${timeline(list, k, att)}`).join('') + '</div>';
       }
       return `<div class="rep-row">
         <button class="rep-head" data-action="toggle-rep" data-id="${row.emp.id}">
           <span class="avatar">${esc(initials(row.emp.name))}</span>
           <span class="row-text"><span class="name">${esc(row.emp.name)}</span>
-            <span class="rep-pills">${pills}${row.noOut ? `<span class="flag warn">${plural(row.noOut, 'day')} without OUT</span>` : ''}</span>
+            <span class="rep-pills">${pills}</span>
           </span>
           <span class="rep-total"><div class="v">${fmtMin(row.awayMin)}</div><div class="k">${plural(row.outs, 'time')} out</div></span>
         </button>${body}</div>`;
@@ -634,13 +802,13 @@ function buildWorkbook() {
 
   // Summary
   const hours = m => Math.round(m / 60 * 100) / 100;
-  const head = ['Employee', 'Department', 'Days present', 'Times out', 'Time out', 'Hours out', 'Minutes out', ...R.map(r => `${r} (minutes)`), 'Days without OUT'];
+  const head = ['Employee', 'Department', 'Present', 'Half days', 'Absent', 'Times out', 'Time out', 'Hours out', 'Minutes out', ...R.map(r => `${r} (minutes)`)];
   const rows = d.rows.map(row => [
-    row.emp.name, row.emp.dept || '', row.days.length, row.outs, fmtMin(row.awayMin), hours(row.awayMin), round(row.awayMin),
-    ...R.map(r => round(row.reasons[r]?.min || 0)), row.noOut,
+    row.emp.name, row.emp.dept || '', row.present, row.half, row.absent, row.outs, fmtMin(row.awayMin), hours(row.awayMin), round(row.awayMin),
+    ...R.map(r => round(row.reasons[r]?.min || 0)),
   ]);
   const sum = i => rows.reduce((a, r) => a + (typeof r[i] === 'number' ? r[i] : 0), 0);
-  const totalRow = head.map((h, i) => (i === 0 ? 'TOTAL' : i === 1 ? '' : i === 4 ? fmtMin(d.totalAway) : i === 5 ? hours(d.totalAway) : sum(i)));
+  const totalRow = head.map((h, i) => (i === 0 ? 'TOTAL' : i === 1 ? '' : i === 6 ? fmtMin(d.totalAway) : i === 7 ? hours(d.totalAway) : sum(i)));
   const wsSum = XLSX.utils.aoa_to_sheet([[title], [`Exported ${fmtDate(Date.now())} at ${fmtTime(Date.now())}`], [], head, ...rows, totalRow]);
   wsSum['!cols'] = head.map((h, i) => ({ wch: i === 0 ? 24 : Math.max(12, h.length + 2) }));
   wsSum['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: Math.min(head.length - 1, 6) } }];
@@ -648,21 +816,21 @@ function buildWorkbook() {
   XLSX.utils.book_append_sheet(wb, wsSum, 'Summary');
 
   // Daily
-  const dHead = ['Date', 'Day', 'Employee', 'Department', 'First IN', 'Left at', 'Times out', 'Time out', 'Minutes out', 'Reasons'];
+  const dHead = ['Date', 'Day', 'Employee', 'Department', 'Attendance', 'First IN', 'Last OUT', 'Times out', 'Time out', 'Minutes out', 'Reasons'];
   const daily = [];
-  for (const row of d.rows) for (const { k, st } of row.days) daily.push({ k, row, st });
+  for (const row of d.rows) for (const { k, st, att } of row.days) daily.push({ k, row, st, att });
   daily.sort((a, b) => a.k.localeCompare(b.k) || byName(a.row.emp, b.row.emp));
-  const dRows = daily.map(({ k, row, st }) => {
+  const dRows = daily.map(({ k, row, st, att }) => {
     const reasons = {};
     st.away.forEach(a => { const r = a.out.reason || NO_REASON; reasons[r] = (reasons[r] || 0) + a.min; });
     return [
       fmtDate(keyToTs(k)), new Date(keyToTs(k)).toLocaleDateString('en-GB', { weekday: 'short' }), row.emp.name, row.emp.dept || '',
-      st.firstIn ? fmtTime(st.firstIn) : '', st.leftAt ? fmtTime(st.leftAt) : '', st.away.length, fmtMin(st.awayMin), round(st.awayMin),
+      STATUS_LABEL[att], st.firstIn ? fmtTime(st.firstIn) : '', st.leftAt ? fmtTime(st.leftAt) : '', st.away.length, fmtMin(st.awayMin), round(st.awayMin),
       Object.entries(reasons).map(([r, m]) => `${r} ${fmtMin(m)}`).join(', '),
     ];
   });
   const wsDay = XLSX.utils.aoa_to_sheet([dHead, ...dRows]);
-  wsDay['!cols'] = [13, 6, 24, 16, 11, 11, 10, 11, 12, 40].map(w => ({ wch: w }));
+  wsDay['!cols'] = [13, 6, 24, 16, 12, 11, 11, 10, 11, 12, 40].map(w => ({ wch: w }));
   withFilter(wsDay, 0, dRows.length, dHead.length);
   XLSX.utils.book_append_sheet(wb, wsDay, 'Daily');
 
@@ -672,11 +840,12 @@ function buildWorkbook() {
   for (const row of d.rows) for (const { st } of row.days) for (const a of st.away) away.push({ row, a });
   away.sort((x, y) => x.a.out.ts - y.a.out.ts);
   const aRows = away.map(({ row, a }) => [
-    fmtDate(a.out.ts), row.emp.name, row.emp.dept || '', fmtTime(a.out.ts), fmtTime(a.back.ts), round(a.min),
-    a.out.reason || '', [a.out.note, a.back.note].filter(Boolean).join('; '),
+    fmtDate(a.out.ts), row.emp.name, row.emp.dept || '', fmtTime(a.out.ts),
+    a.back ? fmtTime(a.back.ts) : `Closing ${fmtClock(S.settings.closeMin)}`, round(a.min),
+    a.out.reason || '', [a.out.note, a.back?.note, a.back ? '' : 'Not back before closing'].filter(Boolean).join('; '),
   ]);
   const wsAway = XLSX.utils.aoa_to_sheet([aHead, ...aRows]);
-  wsAway['!cols'] = [13, 24, 16, 11, 11, 9, 16, 32].map(w => ({ wch: w }));
+  wsAway['!cols'] = [13, 24, 16, 11, 15, 9, 16, 32].map(w => ({ wch: w }));
   withFilter(wsAway, 0, aRows.length, aHead.length);
   XLSX.utils.book_append_sheet(wb, wsAway, 'Time Out');
 
@@ -791,6 +960,17 @@ function renderSettings() {
   const st = S.settings;
   $('#view').innerHTML = `
     <div class="card">
+      <h2>Office hours</h2>
+      <p class="small muted">Marking Present records IN at the opening time. If someone goes OUT and does not come back, the time out is counted until closing.</p>
+      <form data-form="hours">
+        <div class="field"><span>Opens</span>${timeField(minToTs(todayKey(), st.openMin), 'o')}</div>
+        <div class="field"><span>Closes</span>${timeField(minToTs(todayKey(), st.closeMin), 'c')}</div>
+        <p class="error-text hidden" id="hoursError"></p>
+        <button type="submit" class="btn block">Save office hours</button>
+      </form>
+    </div>
+
+    <div class="card">
       <h2>Reasons for going out</h2>
       <p class="small muted">Shown as optional choices when someone goes OUT. You can always go OUT without picking one.</p>
       <form data-form="reasons">
@@ -871,7 +1051,7 @@ async function submitReasons(form) {
    Google Sheet sync
    ============================================================ */
 let syncTimer = null;
-const pendingCount = () => S.employees.filter(e => e.dirty).length + S.punches.filter(p => p.dirty).length;
+const pendingCount = () => S.employees.filter(e => e.dirty).length + S.punches.filter(p => p.dirty).length + S.days.filter(d => d.dirty).length;
 
 function queueSync(delay = 1500) {
   updateBadge();
@@ -881,6 +1061,7 @@ function queueSync(delay = 1500) {
 }
 
 const empPayload = e => ({ id: e.id, name: e.name, dept: e.dept || '', active: !!e.active, createdAt: e.createdAt || 0, updatedAt: e.updatedAt || 0 });
+const dayPayload = r => ({ id: r.id, deleted: !!r.deleted, empId: r.empId, date: r.date, status: r.status, updatedAt: r.updatedAt || 0 });
 const punchPayload = p => ({
   id: p.id, deleted: !!p.deleted, empId: p.empId, type: p.type, ts: p.ts,
   reason: p.reason || '', note: p.note || '', updatedAt: p.updatedAt || 0,
@@ -910,14 +1091,17 @@ async function syncNow(manual) {
     for (let round = 0; round < 100; round++) {
       const emps = S.employees.filter(e => e.dirty);
       const punches = S.punches.filter(p => p.dirty).slice(0, 500);
-      if (!emps.length && !punches.length) break;
-      const stamp = new Map([...emps, ...punches].map(r => [r.id, r.updatedAt]));
+      const days = S.days.filter(r => r.dirty).slice(0, 500);
+      if (!emps.length && !punches.length && !days.length) break;
+      const stamp = new Map([...emps, ...punches, ...days].map(r => [r.id, r.updatedAt]));
       await callScript({
         action: 'sync',
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         reasons: S.settings.reasons,
         employees: emps.map(empPayload),
         punches: punches.map(punchPayload),
+        attendance: days.map(dayPayload),
+        office: { open: S.settings.openMin, close: S.settings.closeMin },
       });
       // Anything edited while the request was in flight stays dirty for the next round.
       const doneE = [], doneP = [], purge = [];
@@ -929,7 +1113,14 @@ async function syncNow(manual) {
       if (doneE.length) await DB.put('employees', doneE);
       if (doneP.length) await DB.put('punches', doneP);
       if (purge.length) { await DB.del('punches', purge); S.punches = S.punches.filter(p => !purge.includes(p.id)); }
-      if (!doneE.length && !doneP.length && !purge.length) break;
+      const doneD = [], purgeD = [];
+      days.forEach(r => {
+        if (r.updatedAt !== stamp.get(r.id)) return;
+        if (r.deleted) purgeD.push(r.id); else { r.dirty = false; doneD.push(r); }
+      });
+      if (doneD.length) await DB.put('days', doneD);
+      if (purgeD.length) { await DB.del('days', purgeD); S.days = S.days.filter(r => !purgeD.includes(r.id)); }
+      if (!doneE.length && !doneP.length && !purge.length && !doneD.length && !purgeD.length) break;
     }
     S.settings.lastSync = Date.now();
     await saveSettings();
@@ -963,7 +1154,7 @@ function updateBadge() {
   if (box) box.innerHTML = syncStatusHtml();
 }
 
-async function mergeIncoming(emps, punches, markDirty) {
+async function mergeIncoming(emps, punches, markDirty, days = []) {
   let nE = 0, nP = 0;
   const putE = [], putP = [];
   for (const inc of emps || []) {
@@ -982,8 +1173,19 @@ async function mergeIncoming(emps, punches, markDirty) {
     if (cur) Object.assign(cur, p); else S.punches.push(p);
     putP.push(cur || p); nP++;
   }
+  const putD = [];
+  for (const inc of days || []) {
+    if (!inc || !inc.empId || !/^\d{4}-\d{2}-\d{2}$/.test(String(inc.date)) || inc.deleted || !STATUS_LABEL[inc.status]) continue;
+    const id = `${inc.empId}|${inc.date}`;
+    const cur = S.days.find(r => r.id === id);
+    if (cur && (cur.updatedAt || 0) >= (inc.updatedAt || 0)) continue;
+    const r = { id, empId: inc.empId, date: String(inc.date), status: inc.status, deleted: false, updatedAt: Number(inc.updatedAt) || Date.now(), dirty: markDirty };
+    if (cur) Object.assign(cur, r); else S.days.push(r);
+    putD.push(cur || r);
+  }
   if (putE.length) await DB.put('employees', putE);
   if (putP.length) await DB.put('punches', putP);
+  if (putD.length) await DB.put('days', putD);
   if (markDirty) queueSync();
   return { nE, nP };
 }
@@ -995,6 +1197,7 @@ function backupFile() {
     settings: { reasons: S.settings.reasons },
     employees: S.employees.map(({ dirty, ...e }) => e),
     punches: live().map(({ dirty, ...p }) => p),
+    days: S.days.filter(r => !r.deleted).map(({ dirty, ...r }) => r),
   };
   const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -1013,7 +1216,7 @@ async function restoreFile(file) {
       for (const r of data.settings.reasons) if (!S.settings.reasons.includes(r)) S.settings.reasons.push(r);
       await saveSettings();
     }
-    const { nE, nP } = await mergeIncoming(data.employees, data.punches, true);
+    const { nE, nP } = await mergeIncoming(data.employees, data.punches, true, data.days);
     toast(`Loaded ${plural(nE, 'employee')} and ${plural(nP, 'entry', 'entries')}`);
     render();
   } catch (err) { toast(err.message || 'Could not read the file'); }
@@ -1050,6 +1253,13 @@ const actions = {
   filter: el => { S.filter = S.filter === el.dataset.filter ? 'all' : el.dataset.filter; renderHomeBody(); tick(); },
   'open-emp': el => { S.sheetEmp = el.dataset.id; S.pickReason = ''; openOverlay('sheet'); tick(); },
   punch: el => punch(el.dataset.id, el.dataset.type, el.dataset.reason || ''),
+  mark: el => markAttendance(el.dataset.id, el.dataset.status),
+  'all-present': () => markAllPresent(),
+  'set-att': el => {
+    const st = statusOf(el.dataset.id);
+    if (st.att === el.dataset.status) return;
+    markAttendance(el.dataset.id, el.dataset.status);
+  },
   'set-reason': async el => {
     const r = el.dataset.reason;
     const st = statusOf(S.sheetEmp);
@@ -1112,7 +1322,11 @@ const actions = {
         for (const r of data.reasons) if (!S.settings.reasons.includes(r)) S.settings.reasons.push(r);
         await saveSettings();
       }
-      const { nE, nP } = await mergeIncoming(data.employees, data.punches, false);
+      if (data.office && Number.isFinite(data.office.open) && Number.isFinite(data.office.close)) {
+        S.settings.openMin = data.office.open; S.settings.closeMin = data.office.close;
+        await saveSettings();
+      }
+      const { nE, nP } = await mergeIncoming(data.employees, data.punches, false, data.attendance);
       toast(`Restored ${plural(nE, 'employee')} and ${plural(nP, 'entry', 'entries')}`);
       render();
     } catch (err) { toast('Restore failed: ' + err.message); }
@@ -1174,6 +1388,24 @@ document.addEventListener('submit', async e => {
       render();
       break;
     case 'reasons': await submitReasons(form); break;
+    case 'attend': {
+      const status = e.submitter?.value || 'present';
+      await markAttendance(S.sheetEmp, status, readTime(fd, 'a'));
+      break;
+    }
+    case 'hours': {
+      const open = readTime(fd, 'o'), close = readTime(fd, 'c');
+      if (close <= open) {
+        const el = $('#hoursError'); el.textContent = 'Closing time must be after opening time.'; el.classList.remove('hidden');
+        break;
+      }
+      S.settings.openMin = open; S.settings.closeMin = close;
+      await saveSettings();
+      queueSync();
+      toast(`Office hours saved: ${fmtClock(open)} to ${fmtClock(close)}`);
+      render();
+      break;
+    }
     case 'sync': {
       S.settings.scriptUrl = String(fd.get('url')).trim();
       S.settings.secret = String(fd.get('secret')).trim();
@@ -1186,6 +1418,8 @@ document.addEventListener('submit', async e => {
         // First connection: send everything so the sheet has a full copy.
         S.employees.forEach(x => { x.dirty = true; });
         S.punches.forEach(x => { x.dirty = true; });
+        S.days.forEach(x => { x.dirty = true; });
+        await DB.put('days', S.days);
         await DB.put('employees', S.employees);
         await DB.put('punches', S.punches);
         toast('Connected. Backing up all data...');
@@ -1211,15 +1445,18 @@ window.addEventListener('offline', () => updateBadge());
 async function init() {
   try {
     await DB.open();
-    const [emps, punches, meta] = await Promise.all([DB.all('employees'), DB.all('punches'), DB.all('meta')]);
+    const [emps, punches, days, meta] = await Promise.all([DB.all('employees'), DB.all('punches'), DB.all('days'), DB.all('meta')]);
     S.employees = emps;
     S.punches = punches;
+    S.days = days;
     const saved = meta.find(m => m.key === 'settings');
     if (saved) S.settings = { ...structuredClone(DEFAULT_SETTINGS), ...saved.value };
     // Deleted entries are only kept until the sheet hears about them.
     if (!S.settings.scriptUrl) {
       const gone = S.punches.filter(p => p.deleted).map(p => p.id);
       if (gone.length) { await DB.del('punches', gone); S.punches = S.punches.filter(p => !p.deleted); }
+      const goneD = S.days.filter(r => r.deleted).map(r => r.id);
+      if (goneD.length) { await DB.del('days', goneD); S.days = S.days.filter(r => !r.deleted); }
     }
   } catch (err) {
     $('#view').innerHTML = `<div class="card empty"><h3>Storage is not available</h3><p>${esc(err.message || err)}</p><p>Open this page in Chrome (not in private / incognito mode).</p></div>`;
