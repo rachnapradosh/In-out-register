@@ -360,3 +360,8 @@ details summary { cursor: pointer; font-weight: 650; color: var(--brand); paddin
   .pbtn.absent { width: 62px; }
   .att-counts b { font-size: 19px; }
 }
+
+/* Permanent delete */
+.mini-btn.danger { color: var(--danger); border-color: var(--danger-soft); margin-left: 6px; }
+.link-btn { border: 0; background: none; color: var(--muted); text-decoration: underline; padding: 12px 8px 2px; font-size: 14px; display: block; margin: 0 auto; }
+.link-btn.danger-link { color: var(--danger); }

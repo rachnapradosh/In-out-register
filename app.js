@@ -10,7 +10,7 @@
    Google Sheet when one is connected.
    ============================================================ */
 
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.1.1';
 const COLOR_COUNT = 6;
 const NO_REASON = 'No reason';
 const DEFAULT_SETTINGS = {
@@ -148,7 +148,7 @@ const ICON = {
 
 /* ---------- Data access ---------- */
 const live = () => S.punches.filter(p => !p.deleted);
-const activeEmps = () => S.employees.filter(e => e.active).sort(byName);
+const activeEmps = () => S.employees.filter(e => e.active && !e.deleted).sort(byName);
 const empById = id => S.employees.find(e => e.id === id);
 const empName = id => empById(id)?.name || 'Unknown';
 const colorClass = reason => {
@@ -637,6 +637,7 @@ function renderModal() {
           <button type="button" class="btn danger" data-action="remove-emp" data-id="${e.id}">Remove</button>
           <button type="submit" class="btn">Save</button>
         </div>
+        <button type="button" class="link-btn danger-link" data-action="delete-emp" data-id="${e.id}">Delete permanently, with all entries</button>
       </form>`;
   }
 }
@@ -885,7 +886,7 @@ async function exportExcel(share) {
 /* ---------- Employees ---------- */
 function renderEmployees() {
   const active = activeEmps();
-  const removed = S.employees.filter(e => !e.active).sort(byName);
+  const removed = S.employees.filter(e => !e.active && !e.deleted).sort(byName);
   $('#view').innerHTML = `
     <div class="card">
       <h2>Add employee</h2>
@@ -920,8 +921,9 @@ function renderEmployees() {
     ${removed.length ? `<details class="card"><summary>Removed employees (${removed.length})</summary>
       <div class="plain-list">${removed.map(e => `
         <div class="plain-item"><span class="row-text"><span class="name">${esc(e.name)}</span></span>
-        <button class="mini-btn" data-action="restore-emp" data-id="${e.id}">Restore</button></div>`).join('')}</div>
-      <p class="small muted">Removed employees are hidden from the main screen but their past entries stay in reports.</p>
+        <button class="mini-btn" data-action="restore-emp" data-id="${e.id}">Restore</button>
+        <button class="mini-btn danger" data-action="delete-emp" data-id="${e.id}">Delete</button></div>`).join('')}</div>
+      <p class="small muted">Removed employees are hidden from the main screen but their past entries stay in reports. Delete removes them and all their entries for good, here and in the Google Sheet.</p>
     </details>` : ''}`;
 }
 
@@ -1012,6 +1014,12 @@ function renderSettings() {
     </div>
 
     <div class="card">
+      <h2>Start fresh</h2>
+      <p class="small muted">Deletes every IN, OUT and attendance record on this phone and in the Google Sheet. Employee names, reasons and office hours are kept. Save a backup file first if you might need the old entries.</p>
+      <button class="btn danger block" data-action="clear-entries">Clear all entries (keep employees)</button>
+    </div>
+
+    <div class="card">
       <label class="switch"><span><b>Keep screen on</b><br><span class="small muted">Stops the phone from locking while the app is open</span></span>
         <input type="checkbox" data-change="keep-awake" ${st.keepAwake ? 'checked' : ''}></label>
     </div>
@@ -1060,7 +1068,7 @@ function queueSync(delay = 1500) {
   syncTimer = setTimeout(() => syncNow(false), delay);
 }
 
-const empPayload = e => ({ id: e.id, name: e.name, dept: e.dept || '', active: !!e.active, createdAt: e.createdAt || 0, updatedAt: e.updatedAt || 0 });
+const empPayload = e => ({ id: e.id, deleted: !!e.deleted, name: e.name, dept: e.dept || '', active: !!e.active, createdAt: e.createdAt || 0, updatedAt: e.updatedAt || 0 });
 const dayPayload = r => ({ id: r.id, deleted: !!r.deleted, empId: r.empId, date: r.date, status: r.status, updatedAt: r.updatedAt || 0 });
 const punchPayload = p => ({
   id: p.id, deleted: !!p.deleted, empId: p.empId, type: p.type, ts: p.ts,
@@ -1104,13 +1112,17 @@ async function syncNow(manual) {
         office: { open: S.settings.openMin, close: S.settings.closeMin },
       });
       // Anything edited while the request was in flight stays dirty for the next round.
-      const doneE = [], doneP = [], purge = [];
-      emps.forEach(e => { if (e.updatedAt === stamp.get(e.id)) { e.dirty = false; doneE.push(e); } });
+      const doneE = [], doneP = [], purge = [], purgeE = [];
+      emps.forEach(e => {
+        if (e.updatedAt !== stamp.get(e.id)) return;
+        if (e.deleted) purgeE.push(e.id); else { e.dirty = false; doneE.push(e); }
+      });
       punches.forEach(p => {
         if (p.updatedAt !== stamp.get(p.id)) return;
         if (p.deleted) purge.push(p.id); else { p.dirty = false; doneP.push(p); }
       });
       if (doneE.length) await DB.put('employees', doneE);
+      if (purgeE.length) { await DB.del('employees', purgeE); S.employees = S.employees.filter(e => !purgeE.includes(e.id)); }
       if (doneP.length) await DB.put('punches', doneP);
       if (purge.length) { await DB.del('punches', purge); S.punches = S.punches.filter(p => !purge.includes(p.id)); }
       const doneD = [], purgeD = [];
@@ -1120,7 +1132,7 @@ async function syncNow(manual) {
       });
       if (doneD.length) await DB.put('days', doneD);
       if (purgeD.length) { await DB.del('days', purgeD); S.days = S.days.filter(r => !purgeD.includes(r.id)); }
-      if (!doneE.length && !doneP.length && !purge.length && !doneD.length && !purgeD.length) break;
+      if (!doneE.length && !purgeE.length && !doneP.length && !purge.length && !doneD.length && !purgeD.length) break;
     }
     S.settings.lastSync = Date.now();
     await saveSettings();
@@ -1188,6 +1200,52 @@ async function mergeIncoming(emps, punches, markDirty, days = []) {
   if (putD.length) await DB.put('days', putD);
   if (markDirty) queueSync();
   return { nE, nP };
+}
+
+/* ---------- Deleting for good ---------- */
+// Deleted records stay on the phone, marked deleted, only until the Google
+// Sheet has been told about them. Without a sheet they are removed at once.
+async function purgeDeleted() {
+  const goneP = S.punches.filter(p => p.deleted).map(p => p.id);
+  const goneD = S.days.filter(r => r.deleted).map(r => r.id);
+  const goneE = S.employees.filter(e => e.deleted).map(e => e.id);
+  if (goneP.length) { await DB.del('punches', goneP); S.punches = S.punches.filter(p => !p.deleted); }
+  if (goneD.length) { await DB.del('days', goneD); S.days = S.days.filter(r => !r.deleted); }
+  if (goneE.length) { await DB.del('employees', goneE); S.employees = S.employees.filter(e => !e.deleted); }
+}
+
+// Marks records deleted in one go (one database write per store).
+async function markDeleted(punches, days, emps = []) {
+  const now = Date.now();
+  for (const x of [...punches, ...days, ...emps]) Object.assign(x, { deleted: true, dirty: true, updatedAt: now });
+  if (punches.length) await DB.put('punches', punches);
+  if (days.length) await DB.put('days', days);
+  if (emps.length) await DB.put('employees', emps);
+  if (S.settings.scriptUrl) queueSync(300); else await purgeDeleted();
+}
+
+async function clearAllEntries() {
+  const punches = S.punches.filter(p => !p.deleted);
+  const days = S.days.filter(r => !r.deleted);
+  if (!punches.length && !days.length) { toast('There are no entries to clear'); return; }
+  if (!confirm(`Delete all ${plural(punches.length, 'IN/OUT entry', 'IN/OUT entries')} and ${plural(days.length, 'attendance record')}?\n\nEmployee names, reasons and office hours are kept. This cannot be undone.`)) return;
+  await markDeleted(punches, days);
+  render();
+  toast(S.settings.scriptUrl ? 'All entries cleared. The Google Sheet will be cleared at the next backup.' : 'All entries cleared');
+}
+
+async function deleteEmployee(id) {
+  const e = empById(id);
+  if (!e) return;
+  const punches = S.punches.filter(p => p.empId === id && !p.deleted);
+  const days = S.days.filter(r => r.empId === id && !r.deleted);
+  const what = punches.length + days.length ? ` and ${plural(punches.length + days.length, 'entry', 'entries')}` : '';
+  if (!confirm(`Delete ${e.name}${what} permanently?\n\nThis removes them from this phone and from the Google Sheet. It cannot be undone.`)) return;
+  e.active = false;
+  await markDeleted(punches, days, [e]);
+  if (S.overlays.length) closeOverlay();
+  render();
+  toast(`${e.name} deleted`);
 }
 
 /* ---------- Backup file ---------- */
@@ -1307,6 +1365,8 @@ const actions = {
     e.active = false; await saveEmployee(e);
     closeOverlay(); toast(`${e.name} removed`);
   },
+  'delete-emp': el => deleteEmployee(el.dataset.id),
+  'clear-entries': () => clearAllEntries(),
   'restore-emp': async el => { const e = empById(el.dataset.id); e.active = true; await saveEmployee(e); render(); toast(`${e.name} restored`); },
   'import-emps': () => $('#importInput').click(),
   'add-reason': () => { $('#reasonRows').insertAdjacentHTML('beforeend', reasonEditRow()); $('#reasonRows .reason-edit:last-child input').focus(); },
@@ -1452,12 +1512,7 @@ async function init() {
     const saved = meta.find(m => m.key === 'settings');
     if (saved) S.settings = { ...structuredClone(DEFAULT_SETTINGS), ...saved.value };
     // Deleted entries are only kept until the sheet hears about them.
-    if (!S.settings.scriptUrl) {
-      const gone = S.punches.filter(p => p.deleted).map(p => p.id);
-      if (gone.length) { await DB.del('punches', gone); S.punches = S.punches.filter(p => !p.deleted); }
-      const goneD = S.days.filter(r => r.deleted).map(r => r.id);
-      if (goneD.length) { await DB.del('days', goneD); S.days = S.days.filter(r => !r.deleted); }
-    }
+    if (!S.settings.scriptUrl) await purgeDeleted();
   } catch (err) {
     $('#view').innerHTML = `<div class="card empty"><h3>Storage is not available</h3><p>${esc(err.message || err)}</p><p>Open this page in Chrome (not in private / incognito mode).</p></div>`;
     return;

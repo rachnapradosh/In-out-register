@@ -1,6 +1,6 @@
 // Keeps the app working without internet. Bump VERSION when files change
 // so phones pick up the new copy on their next launch.
-const VERSION = 'inout-2.1.0';
+const VERSION = 'inout-2.1.1';
 const ASSETS = [
   './',
   'index.html',
